@@ -1,0 +1,16 @@
+# Canonical permission policy for this repo (example).
+# Translate with: dotagents permissions --cwd . --apply
+
+allow_shell:
+  - git status
+  - git diff
+  - git log
+  - ls
+  - pytest
+deny_shell:
+  - git push --force
+  - git push -f
+allow_fetch:
+  - github.com
+workspace_write: true
+external_write: []

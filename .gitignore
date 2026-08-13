@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
+.coverage
+htmlcov/
+.agents/permissions.managed.json

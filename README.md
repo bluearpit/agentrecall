@@ -1,0 +1,120 @@
+# dotagents
+
+Keep skills, global instructions, a **small permission policy**, and searchable project history in one place: `~/.agents`.
+
+Cursor, Codex, and OpenCode already read `~/.agents/skills`. Claude Code does not. This CLI links only where a tool cannot see that folder. It cannot resume a Claude session inside Cursor. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
+
+## What syncs
+
+| Thing | Shared? | How |
+| --- | --- | --- |
+| Skills (`SKILL.md`) | Yes | Canonical `~/.agents/skills/`. Directory symlink into `~/.claude/skills/`. |
+| Global instructions | Yes | Canonical `~/.agents/AGENTS.md`. File symlink (or hardlink) to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. |
+| Project instructions | Yes, with a shim | Repo `AGENTS.md` is the source. `dotagents project` writes `CLAUDE.md` containing `@AGENTS.md` if that file is missing. |
+| Chats | Search only | Native JSONL stays put. SQLite FTS index at `~/.agents/history/index.sqlite`. |
+| Permissions | Partial | Canonical `permissions.yaml`. Generates Claude / Cursor CLI / Codex / OpenCode rules. |
+| MCP tool ids, YOLO modes, OS sandboxes | No | Product-specific; not translated. |
+| Cursor User Rules | No | They live in the Cursor UI, not a documented file. Paste the same text into **Customize → Rules**. |
+
+## Why not copy?
+
+Copying `~/.agents/skills` into every agent directory is how files go stale. On one machine, `~/.agents/skills/dev-browser` was current while `~/.claude/skills/dev-browser` was months old. `dotagents` uses live links instead.
+
+Skill **folders** are directory symlinks (POSIX cannot hardlink directories). Instruction **files** try a symlink first, then a hardlink with `--link-mode hardlink` or when a symlink cannot be created on the same volume.
+
+## Install
+
+macOS and Linux. Python 3.11+.
+
+```bash
+uv tool install -e .
+# or, from a clone:
+uv sync --group dev
+uv run dotagents status
+```
+
+## Commands
+
+Write commands are **dry-run unless `--apply`**.
+
+```bash
+dotagents status
+dotagents skills              # dry-run
+dotagents skills --apply      # link ~/.agents/skills into Claude Code
+dotagents skills --apply adopt
+dotagents instructions --apply
+dotagents project --apply     # CLAUDE.md -> @AGENTS.md
+dotagents history reindex --cwd .
+dotagents history search "the decision about X" --cwd .
+dotagents history list --cwd .
+dotagents permissions init --apply
+dotagents permissions                 # dry-run mapping
+dotagents permissions --apply         # user ~/.agents/permissions.yaml -> user agent files
+dotagents permissions init --cwd . --apply
+dotagents permissions --cwd . --apply # project .agents/permissions.yaml -> project files
+```
+
+`--link-mode auto|symlink|hardlink` applies to files. Skill folders always symlink.
+
+## Layout
+
+```
+~/.agents/
+  AGENTS.md                 # global instructions (source of truth)
+  skills/<name>/SKILL.md    # user skills
+  permissions.yaml          # portable allow/deny policy
+  history/index.sqlite      # search index only; not full transcripts
+```
+
+| Agent | Skills | Global instructions | Transcripts (search) |
+| --- | --- | --- | --- |
+| Claude Code | `~/.claude/skills` (needs link) | `~/.claude/CLAUDE.md` | `~/.claude/projects/**/*.jsonl` |
+| Cursor | reads `~/.agents/skills` | User Rules in the UI | `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` |
+| Codex | reads `~/.agents/skills` | `~/.codex/AGENTS.md` | `~/.codex/sessions/**/*.jsonl` |
+| OpenCode | reads `~/.agents/skills` | — | — |
+
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_CONFIG_HOME` are honored.
+
+History is keyed by project directory (and git root when present). It is **not** stored in the git repo. Do not commit `~/.agents/history/`.
+
+The bundled skill `search-project-history` is installed into `~/.agents/skills` on `dotagents skills --apply`, then linked into Claude Code like any other skill. Agents should run `dotagents history search "<query>" --cwd .` instead of scraping transcript files themselves.
+
+## Permissions
+
+Write a small policy, not a dump of every command you ever approved:
+
+```yaml
+allow_shell:
+  - git status
+  - git diff
+deny_shell:
+  - git push --force
+allow_fetch:
+  - github.com
+workspace_write: true
+external_write: []
+```
+
+`dotagents permissions --apply` turns that into:
+
+| Agent | File | What is written |
+| --- | --- | --- |
+| Claude Code | `~/.claude/settings.json` or project `.claude/settings.json` | `Bash(git status:*)`, `WebFetch(domain:github.com)`, optional `Edit`/`Write` |
+| Cursor CLI | `~/.cursor/cli-config.json` | `Shell(git status)`, `WebFetch(github.com)` (user-global only) |
+| Codex | `~/.codex/rules/dotagents.rules` or project `.codex/rules/dotagents.rules` | `prefix_rule` allow/forbidden |
+| OpenCode | `opencode.json` | `permission.bash` / `webfetch` / `edit` |
+
+Existing unrelated allow rules are kept. Previously generated `dotagents` rules are replaced on the next apply (tracked in `permissions.managed.json`, not for git).
+
+Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassPermissions` / run-everything modes, Seatbelt vs Codex sandbox.
+
+See [`examples/permissions.yaml`](examples/permissions.yaml).
+
+## Related tools
+
+- [`npx skills`](https://github.com/vercel-labs/skills) — install skills from GitHub into agent directories
+- [cc_transcript_viewer](https://github.com/tim-hua-01/cc_transcript_viewer) — GUI for the same local JSONL files
+
+## License
+
+MIT
