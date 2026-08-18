@@ -24,11 +24,20 @@ Skill **folders** are directory symlinks (POSIX cannot hardlink directories). In
 
 ## Install
 
-macOS and Linux. Python 3.11+.
+macOS and Linux. Python 3.11+. `uv` on `PATH`.
+
+```bash
+uv tool install git+https://github.com/bluearpit/dotagents.git
+dotagents skills --apply
+```
+
+That puts `dotagents` on `PATH` and links the bundled `search-project-history` skill into `~/.agents/skills` (and into Claude Code). Cursor, Codex, and OpenCode already read that folder.
+
+From a checkout:
 
 ```bash
 uv tool install -e .
-# or, from a clone:
+# or, for development:
 uv sync --group dev
 uv run dotagents status
 ```
@@ -47,6 +56,9 @@ dotagents project --apply     # CLAUDE.md -> @AGENTS.md
 dotagents history reindex --cwd .
 dotagents history search "the decision about X" --cwd .
 dotagents history list --cwd .
+dotagents history list --cwd . --since 2026-08-01
+dotagents history commands --cwd .
+dotagents history commands --cwd . --kind test
 dotagents permissions init --apply
 dotagents permissions                 # dry-run mapping
 dotagents permissions --apply         # user ~/.agents/permissions.yaml -> user agent files

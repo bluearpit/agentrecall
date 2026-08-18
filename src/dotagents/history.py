@@ -13,7 +13,11 @@ from pathlib import Path
 from dotagents.layout import AgentName, Layout
 
 MAX_BODY_CHARS = 200_000
+MAX_COMMAND_CHARS = 8_000
+MAX_COMMANDS_PER_SESSION = 1_000
 SNIPPET_RADIUS = 80
+SCHEMA_VERSION = 2
+COMMAND_KINDS = ("test", "http", "git", "python", "docker", "other")
 
 _SKIP_KEYS = frozenset(
     {
@@ -25,6 +29,38 @@ _SKIP_KEYS = frozenset(
         "file-history-snapshot",
     }
 )
+_SHELL_TOOL_NAMES = frozenset({"Bash", "Shell", "bash"})
+_CODEX_EXEC_NAMES = frozenset({"exec_command", "exec"})
+_CODEX_CMD_DOUBLE = re.compile(r'\bcmd:\s*"((?:\\.|[^"\\])*)"')
+_CODEX_CMD_SINGLE = re.compile(r"\bcmd:\s*'((?:\\.|[^'\\])*)'")
+_TEST_MARKERS = (
+    "pytest",
+    "hatch test",
+    "cargo test",
+    "go test",
+    "npm test",
+    "pnpm test",
+    "yarn test",
+    "npx playwright",
+    "playwright test",
+    "python -m unittest",
+    "python3 -m unittest",
+    "python -m pytest",
+    "python3 -m pytest",
+    "uv run pytest",
+)
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandRecord:
+    agent: str
+    source_path: str
+    occurred_at: str | None
+    tool: str
+    command: str
+    purpose: str | None
+    kind: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +73,7 @@ class SessionRecord:
     started_at: str | None
     title: str
     body: str
+    commands: tuple[CommandRecord, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +102,40 @@ def git_toplevel(cwd: Path) -> Path | None:
         if git_entry.exists():
             return candidate
     return None
+
+
+def parse_history_bound(raw: str, *, end_of_day: bool) -> datetime:
+    text = raw.strip()
+    if not text:
+        raise ValueError("empty timestamp bound")
+    if _ISO_DATE.fullmatch(text):
+        parsed = datetime.fromisoformat(text).replace(tzinfo=UTC)
+        if end_of_day:
+            return parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+        return parsed
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError(f"invalid timestamp {raw!r}") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def classify_command_kind(command: str) -> str:
+    lowered = re.sub(r"\s+", " ", command).strip().lower()
+    if any(marker in lowered for marker in _TEST_MARKERS):
+        return "test"
+    if re.search(r"\b(curl|wget|httpie)\b", lowered):
+        return "http"
+    if re.search(r"\bgit\b", lowered):
+        return "git"
+    if re.search(r"\b(docker-compose|docker|kubectl|kind|helm)\b", lowered):
+        return "docker"
+    if re.search(r"\b(python3?|uv run |hatch run )\b", lowered):
+        return "python"
+    return "other"
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
@@ -96,7 +167,40 @@ def connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS commands (
+            id INTEGER PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            agent TEXT NOT NULL,
+            occurred_at TEXT,
+            tool TEXT NOT NULL,
+            command TEXT NOT NULL,
+            purpose TEXT,
+            kind TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS commands_by_source ON commands (source_path)"
+    )
+    connection.execute("CREATE INDEX IF NOT EXISTS commands_by_kind ON commands (kind)")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS commands_by_occurred ON commands (occurred_at)"
+    )
     return connection
+
+
+def _schema_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute("PRAGMA user_version").fetchone()
+    return int(row[0])
+
+
+def _bump_schema_if_needed(connection: sqlite3.Connection) -> bool:
+    if _schema_version(connection) >= SCHEMA_VERSION:
+        return False
+    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    return True
 
 
 def discover_transcripts(layout: Layout) -> list[tuple[AgentName, Path]]:
@@ -154,10 +258,249 @@ def _first_user_title(texts: list[str]) -> str:
     return "(untitled)"
 
 
+def _normalize_timestamp(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    normalized = text[:-1] + "+00:00" if text.endswith("Z") else text
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return text
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _stamp(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _append_time_bounds(
+    sql: str,
+    params: list[object],
+    *,
+    column: str,
+    since: datetime | None,
+    until: datetime | None,
+) -> str:
+    if since is not None:
+        sql += f" AND {column} >= ?"
+        params.append(_stamp(since))
+    if until is not None:
+        sql += f" AND {column} <= ?"
+        params.append(_stamp(until))
+    return sql
+
+
+def _in_time_range(
+    value: str | None,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+) -> bool:
+    if since is None and until is None:
+        return True
+    parsed = None
+    if value is not None:
+        try:
+            parsed = parse_history_bound(value, end_of_day=False)
+        except ValueError:
+            parsed = None
+    if parsed is None:
+        return True
+    if since is not None and parsed < since:
+        return False
+    if until is not None and parsed > until:
+        return False
+    return True
+
+
+def _unescape_cmd(raw: str) -> str:
+    return raw.replace(r"\"", '"').replace(r"\'", "'").replace(r"\\", "\\")
+
+
+def _content_parts(payload: dict[str, object]) -> Iterator[dict[str, object]]:
+    for blob in (payload.get("message"), payload):
+        if not isinstance(blob, dict):
+            continue
+        content = blob.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict):
+                yield part
+
+
+def _purpose_from_mapping(mapping: dict[str, object]) -> str | None:
+    for key in ("description", "justification", "purpose"):
+        value = mapping.get(key)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped[:200]
+    return None
+
+
+def _parsed_command(
+    *,
+    occurred_at: str | None,
+    tool: str,
+    command: str,
+    purpose: str | None,
+) -> CommandRecord | None:
+    stripped = command.strip()
+    if not stripped:
+        return None
+    clipped = stripped[:MAX_COMMAND_CHARS]
+    return CommandRecord(
+        agent="",
+        source_path="",
+        occurred_at=_normalize_timestamp(occurred_at),
+        tool=tool,
+        command=clipped,
+        purpose=purpose,
+        kind=classify_command_kind(clipped),
+    )
+
+
+def _commands_from_tool_use(
+    payload: dict[str, object],
+    *,
+    occurred_at: str | None,
+) -> list[CommandRecord]:
+    found: list[CommandRecord] = []
+    for part in _content_parts(payload):
+        if part.get("type") != "tool_use":
+            continue
+        name = part.get("name")
+        if not isinstance(name, str) or name not in _SHELL_TOOL_NAMES:
+            continue
+        inputs = part.get("input")
+        if not isinstance(inputs, dict):
+            continue
+        command = inputs.get("command")
+        if not isinstance(command, str):
+            continue
+        record = _parsed_command(
+            occurred_at=occurred_at,
+            tool=name,
+            command=command,
+            purpose=_purpose_from_mapping(inputs),
+        )
+        if record is not None:
+            found.append(record)
+    return found
+
+
+def _codex_arguments(raw: object) -> dict[str, object]:
+    if isinstance(raw, dict):
+        return raw
+    if not isinstance(raw, str):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def _commands_from_codex_cmds(
+    text: str,
+    *,
+    occurred_at: str | None,
+    tool: str,
+) -> list[CommandRecord]:
+    bodies = [match.group(1) for match in _CODEX_CMD_DOUBLE.finditer(text)]
+    bodies.extend(match.group(1) for match in _CODEX_CMD_SINGLE.finditer(text))
+    found: list[CommandRecord] = []
+    for body in bodies:
+        record = _parsed_command(
+            occurred_at=occurred_at,
+            tool=tool,
+            command=_unescape_cmd(body),
+            purpose=None,
+        )
+        if record is not None:
+            found.append(record)
+    return found
+
+
+def _commands_from_codex(
+    payload: dict[str, object],
+    *,
+    occurred_at: str | None,
+) -> list[CommandRecord]:
+    if payload.get("type") != "response_item":
+        return []
+    nested = payload.get("payload")
+    if not isinstance(nested, dict):
+        return []
+    nested_type = nested.get("type")
+    name = nested.get("name")
+    if nested_type == "function_call" and name in _CODEX_EXEC_NAMES:
+        arguments = _codex_arguments(nested.get("arguments"))
+        command = arguments.get("cmd")
+        if not isinstance(command, str):
+            command = arguments.get("command")
+        if not isinstance(command, str):
+            return []
+        record = _parsed_command(
+            occurred_at=occurred_at,
+            tool=str(name),
+            command=command,
+            purpose=_purpose_from_mapping(arguments),
+        )
+        return [] if record is None else [record]
+    if nested_type == "custom_tool_call" and name in _CODEX_EXEC_NAMES:
+        raw_input = nested.get("input")
+        if not isinstance(raw_input, str):
+            return []
+        return _commands_from_codex_cmds(
+            raw_input,
+            occurred_at=occurred_at,
+            tool=str(name),
+        )
+    return []
+
+
+def _extract_commands(
+    agent: AgentName,
+    payload: dict[str, object],
+    *,
+    occurred_at: str | None,
+) -> list[CommandRecord]:
+    if agent is AgentName.claude or agent is AgentName.cursor:
+        return _commands_from_tool_use(payload, occurred_at=occurred_at)
+    if agent is AgentName.codex:
+        return _commands_from_codex(payload, occurred_at=occurred_at)
+    return []
+
+
+def _dedupe_commands(commands: list[CommandRecord]) -> list[CommandRecord]:
+    seen: set[str] = set()
+    unique: list[CommandRecord] = []
+    for record in commands:
+        if record.command in seen:
+            continue
+        seen.add(record.command)
+        unique.append(record)
+        if len(unique) >= MAX_COMMANDS_PER_SESSION:
+            break
+    return unique
+
+
 def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
     texts: list[str] = []
+    extracted: list[CommandRecord] = []
     project_cwd: str | None = None
     started_at: str | None = None
+    last_timestamp: str | None = None
+    body_full = False
     try:
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -170,19 +513,29 @@ def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
                     continue
                 if not isinstance(payload, dict):
                     continue
-                if started_at is None:
-                    timestamp = payload.get("timestamp")
-                    if isinstance(timestamp, str):
+                timestamp = payload.get("timestamp")
+                if isinstance(timestamp, str) and timestamp.strip():
+                    last_timestamp = timestamp
+                    if started_at is None:
                         started_at = timestamp
                 extracted_cwd = _extract_cwd(agent, payload)
                 if extracted_cwd is not None and project_cwd is None:
                     project_cwd = extracted_cwd
-                if _is_indexable_event(agent, payload):
-                    texts.extend(_walk_strings(payload))
+                extracted.extend(
+                    _extract_commands(
+                        agent,
+                        payload,
+                        occurred_at=last_timestamp or started_at,
+                    )
+                )
+                if body_full or not _is_indexable_event(agent, payload):
+                    continue
+                texts.extend(_walk_strings(payload))
                 if sum(len(text) for text in texts) >= MAX_BODY_CHARS:
-                    break
+                    body_full = True
     except OSError:
         texts = []
+        extracted = []
 
     if project_cwd is None:
         project_cwd = infer_cwd_from_source_path(agent, path)
@@ -197,15 +550,30 @@ def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
     stat = path.stat()
     if started_at is None:
         started_at = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+    started_at = _normalize_timestamp(started_at)
+    source = str(path)
+    commands = tuple(
+        CommandRecord(
+            agent=agent.value,
+            source_path=source,
+            occurred_at=item.occurred_at or started_at,
+            tool=item.tool,
+            command=item.command,
+            purpose=item.purpose,
+            kind=item.kind,
+        )
+        for item in _dedupe_commands(extracted)
+    )
     return SessionRecord(
         agent=agent.value,
-        source_path=str(path),
+        source_path=source,
         mtime_ns=stat.st_mtime_ns,
         project_cwd=project_cwd,
         git_root=git_root,
         started_at=started_at,
         title=_first_user_title(texts),
         body=body,
+        commands=commands,
     )
 
 
@@ -296,6 +664,20 @@ def belongs_to_project(record: SessionRecord, cwd: Path) -> bool:
     return False
 
 
+def _session_from_row(row: sqlite3.Row) -> SessionRecord:
+    return SessionRecord(
+        agent=row["agent"],
+        source_path=row["source_path"],
+        mtime_ns=0,
+        project_cwd=row["project_cwd"],
+        git_root=row["git_root"] if "git_root" in row.keys() else None,
+        started_at=row["started_at"],
+        title=row["title"] if "title" in row.keys() else "",
+        body=row["body"] if "body" in row.keys() else "",
+        commands=(),
+    )
+
+
 def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
     connection.execute(
         """
@@ -330,6 +712,26 @@ def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
         """,
         (record.source_path, record.title, record.body, record.project_cwd or ""),
     )
+    connection.execute("DELETE FROM commands WHERE source_path = ?", (record.source_path,))
+    connection.executemany(
+        """
+        INSERT INTO commands (
+            source_path, agent, occurred_at, tool, command, purpose, kind
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                item.source_path,
+                item.agent,
+                item.occurred_at,
+                item.tool,
+                item.command,
+                item.purpose,
+                item.kind,
+            )
+            for item in record.commands
+        ],
+    )
 
 
 def existing_mtimes(connection: sqlite3.Connection) -> dict[str, int]:
@@ -344,7 +746,8 @@ def reindex(
     all_projects: bool = False,
 ) -> tuple[int, int]:
     connection = connect(layout.history_db)
-    known = existing_mtimes(connection)
+    stale_schema = _bump_schema_if_needed(connection)
+    known: dict[str, int] = {} if stale_schema else existing_mtimes(connection)
     indexed = 0
     skipped = 0
     scope = None if all_projects else (cwd or Path.cwd())
@@ -398,6 +801,12 @@ def _snippet(body: str, query: str) -> str:
     return f"{prefix}{fragment}{suffix}"
 
 
+def _fetch_limit(*, cwd: Path | None, all_projects: bool, limit: int) -> int:
+    if cwd is not None and not all_projects:
+        return limit * 5
+    return limit
+
+
 def search(
     layout: Layout,
     query: str,
@@ -410,7 +819,7 @@ def search(
     reindex(layout, cwd=cwd, all_projects=all_projects)
     connection = connect(layout.history_db)
     sql = """
-        SELECT s.agent, s.source_path, s.project_cwd, s.started_at, s.title, s.body
+        SELECT s.agent, s.source_path, s.project_cwd, s.git_root, s.started_at, s.title, s.body
         FROM sessions_fts
         JOIN sessions AS s ON s.source_path = sessions_fts.source_path
         WHERE sessions_fts MATCH ?
@@ -420,23 +829,14 @@ def search(
         sql += " AND s.agent = ?"
         params.append(agent)
     sql += " ORDER BY s.started_at DESC LIMIT ?"
-    params.append(limit * 5 if cwd is not None and not all_projects else limit)
+    params.append(_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit))
     rows = list(connection.execute(sql, params))
     connection.close()
 
     scope = None if all_projects else (cwd or Path.cwd())
     hits: list[SearchHit] = []
     for row in rows:
-        record = SessionRecord(
-            agent=row["agent"],
-            source_path=row["source_path"],
-            mtime_ns=0,
-            project_cwd=row["project_cwd"],
-            git_root=None,
-            started_at=row["started_at"],
-            title=row["title"],
-            body=row["body"],
-        )
+        record = _session_from_row(row)
         if scope is not None and not belongs_to_project(record, scope):
             continue
         hits.append(
@@ -461,11 +861,13 @@ def list_sessions(
     agent: str | None = None,
     all_projects: bool = False,
     limit: int = 20,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> list[SearchHit]:
     reindex(layout, cwd=cwd, all_projects=all_projects)
     connection = connect(layout.history_db)
     sql = """
-        SELECT agent, source_path, project_cwd, started_at, title, body
+        SELECT agent, source_path, project_cwd, git_root, started_at, title, body
         FROM sessions
         WHERE 1 = 1
     """
@@ -473,24 +875,24 @@ def list_sessions(
     if agent is not None:
         sql += " AND agent = ?"
         params.append(agent)
+    sql = _append_time_bounds(
+        sql,
+        params,
+        column="started_at",
+        since=since,
+        until=until,
+    )
     sql += " ORDER BY started_at DESC LIMIT ?"
-    params.append(limit * 5 if cwd is not None and not all_projects else limit)
+    params.append(_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit))
     rows = list(connection.execute(sql, params))
     connection.close()
     scope = None if all_projects else (cwd or Path.cwd())
     hits: list[SearchHit] = []
     for row in rows:
-        record = SessionRecord(
-            agent=row["agent"],
-            source_path=row["source_path"],
-            mtime_ns=0,
-            project_cwd=row["project_cwd"],
-            git_root=None,
-            started_at=row["started_at"],
-            title=row["title"],
-            body=row["body"],
-        )
+        record = _session_from_row(row)
         if scope is not None and not belongs_to_project(record, scope):
+            continue
+        if not _in_time_range(record.started_at, since=since, until=until):
             continue
         hits.append(
             SearchHit(
@@ -500,6 +902,82 @@ def list_sessions(
                 started_at=row["started_at"],
                 title=row["title"],
                 snippet=re.sub(r"\s+", " ", row["body"]).strip()[: SNIPPET_RADIUS * 2],
+            )
+        )
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+def list_commands(
+    layout: Layout,
+    *,
+    cwd: Path | None = None,
+    agent: str | None = None,
+    kind: str | None = None,
+    all_projects: bool = False,
+    limit: int = 50,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> list[CommandRecord]:
+    if kind is not None and kind not in COMMAND_KINDS:
+        raise ValueError(f"unknown command kind {kind!r}")
+    reindex(layout, cwd=cwd, all_projects=all_projects)
+    connection = connect(layout.history_db)
+    sql = """
+        SELECT
+            c.agent,
+            c.source_path,
+            c.occurred_at,
+            c.tool,
+            c.command,
+            c.purpose,
+            c.kind,
+            s.project_cwd,
+            s.git_root,
+            s.started_at,
+            s.title,
+            s.body
+        FROM commands AS c
+        JOIN sessions AS s ON s.source_path = c.source_path
+        WHERE 1 = 1
+    """
+    params: list[object] = []
+    if agent is not None:
+        sql += " AND c.agent = ?"
+        params.append(agent)
+    if kind is not None:
+        sql += " AND c.kind = ?"
+        params.append(kind)
+    sql = _append_time_bounds(
+        sql,
+        params,
+        column="c.occurred_at",
+        since=since,
+        until=until,
+    )
+    sql += " ORDER BY c.occurred_at DESC LIMIT ?"
+    params.append(_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit))
+    rows = list(connection.execute(sql, params))
+    connection.close()
+    scope = None if all_projects else (cwd or Path.cwd())
+    hits: list[CommandRecord] = []
+    for row in rows:
+        record = _session_from_row(row)
+        if scope is not None and not belongs_to_project(record, scope):
+            continue
+        occurred = row["occurred_at"] or row["started_at"]
+        if not _in_time_range(occurred, since=since, until=until):
+            continue
+        hits.append(
+            CommandRecord(
+                agent=row["agent"],
+                source_path=row["source_path"],
+                occurred_at=occurred,
+                tool=row["tool"],
+                command=row["command"],
+                purpose=row["purpose"],
+                kind=row["kind"],
             )
         )
         if len(hits) >= limit:

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
 import typer
 
 from dotagents import __version__
-from dotagents.history import list_sessions, reindex, search
+from dotagents.history import (
+    list_commands,
+    list_sessions,
+    parse_history_bound,
+    reindex,
+    search,
+)
 from dotagents.instructions import sync_instructions
 from dotagents.layout import Layout
 from dotagents.linking import LinkMode
@@ -226,6 +234,26 @@ def _optional_cwd(cwd: Path | None) -> Path | None:
     return cwd
 
 
+def _time_bounds(
+    since: str | None,
+    until: str | None,
+) -> tuple[datetime | None, datetime | None]:
+    try:
+        since_at = parse_history_bound(since, end_of_day=False) if since is not None else None
+        until_at = parse_history_bound(until, end_of_day=True) if until is not None else None
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    return since_at, until_at
+
+
+def _compact_command(command: str) -> str:
+    compact = re.sub(r"\s+", " ", command).strip()
+    if len(compact) <= 200:
+        return compact
+    return compact[:197] + "..."
+
+
 @history_app.command("reindex")
 def history_reindex(
     cwd: Annotated[
@@ -296,18 +324,83 @@ def history_list(
         bool,
         typer.Option("--all", help="List sessions for every project."),
     ] = False,
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="Inclusive start date (YYYY-MM-DD or ISO timestamp)."),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option("--until", help="Inclusive end date (YYYY-MM-DD or ISO timestamp)."),
+    ] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, max=200)] = 20,
 ) -> None:
     """List recent sessions for this project."""
+    since_at, until_at = _time_bounds(since, until)
     hits = list_sessions(
         _layout(),
         cwd=_optional_cwd(cwd),
         agent=agent,
         all_projects=all_projects,
         limit=limit,
+        since=since_at,
+        until=until_at,
     )
     if not hits:
         typer.echo("no sessions")
         return
     for hit in hits:
         typer.echo(f"{hit.agent}\t{hit.started_at or '-'}\t{hit.project_cwd or '-'}\t{hit.title}")
+
+
+@history_app.command("commands")
+def history_commands(
+    cwd: Annotated[
+        Path | None,
+        typer.Option("--cwd", help="Project directory. Defaults to the current directory."),
+    ] = None,
+    agent: Annotated[
+        str | None,
+        typer.Option("--agent", help="Limit to claude, cursor, or codex."),
+    ] = None,
+    kind: Annotated[
+        str | None,
+        typer.Option("--kind", help="Limit to test, http, git, python, docker, or other."),
+    ] = None,
+    all_projects: Annotated[
+        bool,
+        typer.Option("--all", help="List commands for every project."),
+    ] = False,
+    since: Annotated[
+        str | None,
+        typer.Option("--since", help="Inclusive start date (YYYY-MM-DD or ISO timestamp)."),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option("--until", help="Inclusive end date (YYYY-MM-DD or ISO timestamp)."),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 50,
+) -> None:
+    """List shell commands indexed from local transcripts."""
+    since_at, until_at = _time_bounds(since, until)
+    try:
+        hits = list_commands(
+            _layout(),
+            cwd=_optional_cwd(cwd),
+            agent=agent,
+            kind=kind,
+            all_projects=all_projects,
+            limit=limit,
+            since=since_at,
+            until=until_at,
+        )
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if not hits:
+        typer.echo("no commands")
+        return
+    for hit in hits:
+        typer.echo(f"{hit.kind}\t{hit.agent}\t{hit.occurred_at or '-'}\t{hit.tool}")
+        typer.echo(f"  {_compact_command(hit.command)}")
+        if hit.purpose is not None:
+            typer.echo(f"  {hit.purpose}")
