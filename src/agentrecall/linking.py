@@ -120,12 +120,14 @@ def plan_directory_symlink(src: Path, dest: Path) -> PlanItem:
         return PlanItem(Op.skip, dest, src, "already linked to canonical skill")
     if dest.is_symlink():
         target = resolve_link_target(dest)
-        if (
-            target is not None
-            and src.exists()
-            and dest.resolve() == src.resolve()
-            and target.absolute() != src.absolute()
-        ):
+        if target is None or not target.exists():
+            return PlanItem(
+                Op.replace_with_symlink,
+                dest,
+                src,
+                "replace broken symlink",
+            )
+        if src.exists() and dest.resolve() == src.resolve() and target.absolute() != src.absolute():
             return PlanItem(
                 Op.replace_with_symlink,
                 dest,
