@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dotagents.layout import Layout
+from agentrecall.layout import Layout
 
 
 @pytest.fixture

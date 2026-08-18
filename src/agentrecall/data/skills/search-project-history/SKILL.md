@@ -24,31 +24,31 @@ Search local chats from Cursor, Claude Code, and Codex for the current project. 
 
 ## Command
 
-`dotagents` must be on `PATH` (`uv tool install dotagents` or `uv tool install -e .` from a checkout).
+`agentrecall` must be on `PATH` (`uv tool install git+https://github.com/bluearpit/agentrecall.git` or `uv tool install -e .` from a checkout).
 
-If `dotagents` is missing, tell the user to install it and stop. Do not invent transcript paths.
+If `agentrecall` is missing, tell the user to install it and stop. Do not invent transcript paths.
 
 Default to the current project:
 
 ```bash
-dotagents history search "<query>" --cwd .
+agentrecall history search "<query>" --cwd .
 ```
 
 Reindex first only when search says the index is missing or looks stale:
 
 ```bash
-dotagents history reindex --cwd .
-dotagents history search "<query>" --cwd .
+agentrecall history reindex --cwd .
+agentrecall history search "<query>" --cwd .
 ```
 
 Optional flags:
 
 - `--agent claude|cursor|codex` to limit the source
 - `--all` to search every project (ask before using)
-- `dotagents history list --cwd .` for recent sessions without a query
-- `dotagents history list --cwd . --since 2026-08-01` to bound by date (`--until` too)
-- `dotagents history commands --cwd .` for shell commands indexed from those chats
-- `dotagents history commands --cwd . --kind test` or `--kind http` (also `git`, `python`, `docker`, `other`)
+- `agentrecall history list --cwd .` for recent sessions without a query
+- `agentrecall history list --cwd . --since 2026-08-01` to bound by date (`--until` too)
+- `agentrecall history commands --cwd .` for shell commands indexed from those chats
+- `agentrecall history commands --cwd . --kind test` or `--kind http` (also `git`, `python`, `docker`, `other`)
 
 ## How to answer
 

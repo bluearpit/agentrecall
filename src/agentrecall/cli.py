@@ -1,4 +1,4 @@
-"""Typer CLI for dotagents."""
+"""Typer CLI for agentrecall."""
 
 from __future__ import annotations
 
@@ -9,26 +9,26 @@ from typing import Annotated
 
 import typer
 
-from dotagents import __version__
-from dotagents.history import (
+from agentrecall import __version__
+from agentrecall.history import (
     list_commands,
     list_sessions,
     parse_history_bound,
     reindex,
     search,
 )
-from dotagents.instructions import sync_instructions
-from dotagents.layout import Layout
-from dotagents.linking import LinkMode
-from dotagents.permissions import (
+from agentrecall.instructions import sync_instructions
+from agentrecall.layout import Layout
+from agentrecall.linking import LinkMode
+from agentrecall.permissions import (
     git_toplevel,
     init_policy,
     project_permissions_file,
     sync_permissions,
 )
-from dotagents.project import sync_project
-from dotagents.skills import adopt_plan, render_and_apply, sync_skills
-from dotagents.status import status_lines
+from agentrecall.project import sync_project
+from agentrecall.skills import adopt_plan, render_and_apply, sync_skills
+from agentrecall.status import status_lines
 
 app = typer.Typer(
     no_args_is_help=True,

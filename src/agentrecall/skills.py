@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from pathlib import Path
 
-from dotagents.layout import AgentName, Layout
-from dotagents.linking import IGNORE_NAMES, Op, PlanItem, apply_item, plan_directory_symlink
+from agentrecall.layout import AgentName, Layout
+from agentrecall.linking import IGNORE_NAMES, Op, PlanItem, apply_item, plan_directory_symlink
 
 
 def bundled_skills_dir() -> Path:

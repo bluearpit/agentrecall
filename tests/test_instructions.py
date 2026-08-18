@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dotagents.instructions import sync_instructions
-from dotagents.layout import Layout
-from dotagents.linking import LinkMode, is_linked_to
+from agentrecall.instructions import sync_instructions
+from agentrecall.layout import Layout
+from agentrecall.linking import LinkMode, is_linked_to
 
 
 def test_instructions_normalize_and_symlink(home: Path, layout: Layout) -> None:

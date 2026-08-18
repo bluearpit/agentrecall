@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from dotagents.layout import AgentName, Layout
+from agentrecall.layout import AgentName, Layout
 
 MAX_BODY_CHARS = 200_000
 MAX_COMMAND_CHARS = 8_000

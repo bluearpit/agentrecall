@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from dotagents.cli import app
-from dotagents.layout import Layout
-from dotagents.permissions import (
+from agentrecall.cli import app
+from agentrecall.layout import Layout
+from agentrecall.permissions import (
     PermissionPolicy,
     compile_native,
     init_policy,
@@ -68,9 +68,9 @@ def test_apply_merges_without_clobbering(home: Path, layout: Layout) -> None:
     assert "Bash(git push --force:*)" in data["permissions"]["deny"]
     assert any("wrote" in line for line in lines)
 
-    codex_rules = home / ".codex" / "rules" / "dotagents.rules"
+    codex_rules = home / ".codex" / "rules" / "agentrecall.rules"
     assert codex_rules.is_file()
-    assert "dotagents" in codex_rules.read_text(encoding="utf-8")
+    assert "agentrecall" in codex_rules.read_text(encoding="utf-8")
 
     # Re-apply replaces managed rules instead of duplicating them.
     sync_permissions(layout, cwd=None, dry_run=False)

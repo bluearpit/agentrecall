@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dotagents.layout import AgentName, Layout
-from dotagents.linking import dirs_identical, is_linked_to, resolve_link_target
-from dotagents.skills import extra_claude_skills, skill_dirs
+from agentrecall.layout import AgentName, Layout
+from agentrecall.linking import dirs_identical, is_linked_to, resolve_link_target
+from agentrecall.skills import extra_claude_skills, skill_dirs
 
 
 def skill_state(canonical: Path, dest: Path) -> str:

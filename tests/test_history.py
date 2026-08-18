@@ -6,8 +6,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from dotagents.cli import app
-from dotagents.history import (
+from agentrecall.cli import app
+from agentrecall.history import (
     classify_command_kind,
     encode_claude_project,
     encode_cursor_project,
@@ -16,7 +16,7 @@ from dotagents.history import (
     reindex,
     search,
 )
-from dotagents.layout import Layout
+from agentrecall.layout import Layout
 
 runner = CliRunner()
 

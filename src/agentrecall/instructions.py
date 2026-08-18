@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dotagents.layout import AgentName, Layout
-from dotagents.linking import (
+from agentrecall.layout import AgentName, Layout
+from agentrecall.linking import (
     LinkMode,
     Op,
     PlanItem,

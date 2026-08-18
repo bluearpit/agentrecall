@@ -1,8 +1,8 @@
-# dotagents
+# agentrecall
 
 Keep skills, global instructions, a **small permission policy**, and searchable project history in one place: `~/.agents`.
 
-Cursor, Codex, and OpenCode already read `~/.agents/skills`. Claude Code does not. This CLI links only where a tool cannot see that folder. It cannot resume a Claude session inside Cursor. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
+The CLI is `agentrecall` (previously `dotagents`). It does not rename `~/.agents` — Cursor, Codex, and OpenCode already read that folder. Claude Code does not, so this CLI links only where a tool cannot see it. It cannot resume a Claude session inside Cursor. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
 
 ## What syncs
 
@@ -10,7 +10,7 @@ Cursor, Codex, and OpenCode already read `~/.agents/skills`. Claude Code does no
 | --- | --- | --- |
 | Skills (`SKILL.md`) | Yes | Canonical `~/.agents/skills/`. Directory symlink into `~/.claude/skills/`. |
 | Global instructions | Yes | Canonical `~/.agents/AGENTS.md`. File symlink (or hardlink) to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. |
-| Project instructions | Yes, with a shim | Repo `AGENTS.md` is the source. `dotagents project` writes `CLAUDE.md` containing `@AGENTS.md` if that file is missing. |
+| Project instructions | Yes, with a shim | Repo `AGENTS.md` is the source. `agentrecall project` writes `CLAUDE.md` containing `@AGENTS.md` if that file is missing. |
 | Chats | Search only | Native JSONL stays put. SQLite FTS index at `~/.agents/history/index.sqlite`. |
 | Permissions | Partial | Canonical `permissions.yaml`. Generates Claude / Cursor CLI / Codex / OpenCode rules. |
 | MCP tool ids, YOLO modes, OS sandboxes | No | Product-specific; not translated. |
@@ -18,7 +18,7 @@ Cursor, Codex, and OpenCode already read `~/.agents/skills`. Claude Code does no
 
 ## Why not copy?
 
-Copying `~/.agents/skills` into every agent directory is how files go stale. On one machine, `~/.agents/skills/dev-browser` was current while `~/.claude/skills/dev-browser` was months old. `dotagents` uses live links instead.
+Copying `~/.agents/skills` into every agent directory is how files go stale. On one machine, `~/.agents/skills/dev-browser` was current while `~/.claude/skills/dev-browser` was months old. `agentrecall` uses live links instead.
 
 Skill **folders** are directory symlinks (POSIX cannot hardlink directories). Instruction **files** try a symlink first, then a hardlink with `--link-mode hardlink` or when a symlink cannot be created on the same volume.
 
@@ -27,11 +27,11 @@ Skill **folders** are directory symlinks (POSIX cannot hardlink directories). In
 macOS and Linux. Python 3.11+. `uv` on `PATH`.
 
 ```bash
-uv tool install git+https://github.com/bluearpit/dotagents.git
-dotagents skills --apply
+uv tool install git+https://github.com/bluearpit/agentrecall.git
+agentrecall skills --apply
 ```
 
-That puts `dotagents` on `PATH` and links the bundled `search-project-history` skill into `~/.agents/skills` (and into Claude Code). Cursor, Codex, and OpenCode already read that folder.
+That puts `agentrecall` on `PATH` and links the bundled `search-project-history` skill into `~/.agents/skills` (and into Claude Code). Cursor, Codex, and OpenCode already read that folder.
 
 From a checkout:
 
@@ -39,7 +39,7 @@ From a checkout:
 uv tool install -e .
 # or, for development:
 uv sync --group dev
-uv run dotagents status
+uv run agentrecall status
 ```
 
 ## Commands
@@ -47,23 +47,23 @@ uv run dotagents status
 Write commands are **dry-run unless `--apply`**.
 
 ```bash
-dotagents status
-dotagents skills              # dry-run
-dotagents skills --apply      # link ~/.agents/skills into Claude Code
-dotagents skills --apply adopt
-dotagents instructions --apply
-dotagents project --apply     # CLAUDE.md -> @AGENTS.md
-dotagents history reindex --cwd .
-dotagents history search "the decision about X" --cwd .
-dotagents history list --cwd .
-dotagents history list --cwd . --since 2026-08-01
-dotagents history commands --cwd .
-dotagents history commands --cwd . --kind test
-dotagents permissions init --apply
-dotagents permissions                 # dry-run mapping
-dotagents permissions --apply         # user ~/.agents/permissions.yaml -> user agent files
-dotagents permissions init --cwd . --apply
-dotagents permissions --cwd . --apply # project .agents/permissions.yaml -> project files
+agentrecall status
+agentrecall skills              # dry-run
+agentrecall skills --apply      # link ~/.agents/skills into Claude Code
+agentrecall skills --apply adopt
+agentrecall instructions --apply
+agentrecall project --apply     # CLAUDE.md -> @AGENTS.md
+agentrecall history reindex --cwd .
+agentrecall history search "the decision about X" --cwd .
+agentrecall history list --cwd .
+agentrecall history list --cwd . --since 2026-08-01
+agentrecall history commands --cwd .
+agentrecall history commands --cwd . --kind test
+agentrecall permissions init --apply
+agentrecall permissions                 # dry-run mapping
+agentrecall permissions --apply         # user ~/.agents/permissions.yaml -> user agent files
+agentrecall permissions init --cwd . --apply
+agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> project files
 ```
 
 `--link-mode auto|symlink|hardlink` applies to files. Skill folders always symlink.
@@ -89,7 +89,7 @@ dotagents permissions --cwd . --apply # project .agents/permissions.yaml -> proj
 
 History is keyed by project directory (and git root when present). It is **not** stored in the git repo. Do not commit `~/.agents/history/`.
 
-The bundled skill `search-project-history` is installed into `~/.agents/skills` on `dotagents skills --apply`, then linked into Claude Code like any other skill. Agents should run `dotagents history search "<query>" --cwd .` instead of scraping transcript files themselves.
+The bundled skill `search-project-history` is installed into `~/.agents/skills` on `agentrecall skills --apply`, then linked into Claude Code like any other skill. Agents should run `agentrecall history search "<query>" --cwd .` instead of scraping transcript files themselves.
 
 ## Permissions
 
@@ -107,16 +107,16 @@ workspace_write: true
 external_write: []
 ```
 
-`dotagents permissions --apply` turns that into:
+`agentrecall permissions --apply` turns that into:
 
 | Agent | File | What is written |
 | --- | --- | --- |
 | Claude Code | `~/.claude/settings.json` or project `.claude/settings.json` | `Bash(git status:*)`, `WebFetch(domain:github.com)`, optional `Edit`/`Write` |
 | Cursor CLI | `~/.cursor/cli-config.json` | `Shell(git status)`, `WebFetch(github.com)` (user-global only) |
-| Codex | `~/.codex/rules/dotagents.rules` or project `.codex/rules/dotagents.rules` | `prefix_rule` allow/forbidden |
+| Codex | `~/.codex/rules/agentrecall.rules` or project `.codex/rules/agentrecall.rules` | `prefix_rule` allow/forbidden |
 | OpenCode | `opencode.json` | `permission.bash` / `webfetch` / `edit` |
 
-Existing unrelated allow rules are kept. Previously generated `dotagents` rules are replaced on the next apply (tracked in `permissions.managed.json`, not for git).
+Existing unrelated allow rules are kept. Previously generated `agentrecall` rules are replaced on the next apply (tracked in `permissions.managed.json`, not for git).
 
 Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassPermissions` / run-everything modes, Seatbelt vs Codex sandbox.
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dotagents.project import sync_project
+from agentrecall.project import sync_project
 
 
 def test_project_shim_created(tmp_path: Path) -> None:

@@ -4,8 +4,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from dotagents.cli import app
-from dotagents.layout import Layout
+from agentrecall.cli import app
+from agentrecall.layout import Layout
 
 runner = CliRunner()
 

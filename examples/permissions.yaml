@@ -1,5 +1,5 @@
 # Canonical permission policy for this repo (example).
-# Translate with: dotagents permissions --cwd . --apply
+# Translate with: agentrecall permissions --cwd . --apply
 
 allow_shell:
   - git status

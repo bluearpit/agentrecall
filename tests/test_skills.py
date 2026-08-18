@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dotagents.layout import Layout
-from dotagents.linking import is_linked_to
-from dotagents.skills import extra_claude_skills, skill_dirs, sync_skills
+from agentrecall.layout import Layout
+from agentrecall.linking import is_linked_to
+from agentrecall.skills import extra_claude_skills, skill_dirs, sync_skills
 
 
 def _write_skill(root: Path, name: str, body: str) -> Path:

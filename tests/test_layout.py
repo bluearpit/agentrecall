@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from dotagents.layout import AgentName, Layout
+from agentrecall.layout import AgentName, Layout
 
 
 def test_default_homes(home: Path, layout: Layout) -> None:
