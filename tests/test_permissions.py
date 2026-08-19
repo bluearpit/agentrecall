@@ -40,6 +40,22 @@ def test_compile_shell_and_fetch() -> None:
     assert rules.opencode_edit == "allow"
 
 
+def test_compile_external_write_history(home: Path) -> None:
+    policy = PermissionPolicy(
+        allow_shell=("agentrecall",),
+        external_write=("~/.agents/history",),
+    )
+    rules = compile_native(policy)
+    history = str(home / ".agents" / "history")
+    assert "Bash(agentrecall:*)" in rules.claude_allow
+    assert "Shell(agentrecall)" in rules.cursor_allow
+    assert history in rules.claude_additional_dirs
+    assert history in rules.claude_sandbox_allow_write
+    assert history in rules.codex_writable_roots
+    assert rules.opencode_external[history] == "allow"
+    assert any("Cursor has no portable extra-root mapping" in item for item in rules.skipped)
+
+
 def test_parse_rejects_bad_lists() -> None:
     with pytest.raises(ValueError, match="allow_shell"):
         parse_policy({"allow_shell": "git status"})
@@ -66,11 +82,17 @@ def test_apply_merges_without_clobbering(home: Path, layout: Layout) -> None:
     assert "Bash(uv run:*)" in data["permissions"]["allow"]
     assert "Bash(git status:*)" in data["permissions"]["allow"]
     assert "Bash(git push --force:*)" in data["permissions"]["deny"]
+    history = str(home / ".agents" / "history")
+    assert history in data["permissions"]["additionalDirectories"]
+    assert history in data["sandbox"]["filesystem"]["allowWrite"]
     assert any("wrote" in line for line in lines)
 
     codex_rules = home / ".codex" / "rules" / "agentrecall.rules"
     assert codex_rules.is_file()
     assert "agentrecall" in codex_rules.read_text(encoding="utf-8")
+    config_toml = (home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert history in config_toml
+    assert "writable_roots" in config_toml
 
     # Re-apply replaces managed rules instead of duplicating them.
     sync_permissions(layout, cwd=None, dry_run=False)
@@ -111,4 +133,25 @@ def test_permissions_cli_init_and_apply(home: Path, layout: Layout) -> None:
     assert applied.exit_code == 0
     settings = json.loads((home / ".claude" / "settings.json").read_text(encoding="utf-8"))
     assert "Bash(git status:*)" in settings["permissions"]["allow"]
+    assert "Bash(agentrecall:*)" in settings["permissions"]["allow"]
     assert "Bash(git push --force:*)" in settings["permissions"]["deny"]
+    history = str(home / ".agents" / "history")
+    assert history in settings["permissions"]["additionalDirectories"]
+
+
+def test_codex_writable_roots_merge_existing_config(home: Path, layout: Layout) -> None:
+    config = home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text(
+        'notify = ["turn-ended"]\n\n[sandbox_workspace_write]\n'
+        'writable_roots = ["/tmp/notes"]\n',
+        encoding="utf-8",
+    )
+    init_policy(layout.permissions_file, dry_run=False)
+    _, failed = sync_permissions(layout, cwd=None, dry_run=False)
+    assert failed == 0
+    text = config.read_text(encoding="utf-8")
+    assert "turn-ended" in text
+    assert "/tmp/notes" in text
+    assert str(home / ".agents" / "history") in text
+    assert text.count("[sandbox_workspace_write]") == 1

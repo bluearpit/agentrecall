@@ -28,6 +28,8 @@ macOS and Linux. Python 3.11+. `uv` on `PATH`.
 
 ```bash
 uv tool install git+https://github.com/bluearpit/agentrecall.git
+# or pin the 0.1.0 release:
+uv tool install git+https://github.com/bluearpit/agentrecall.git@v0.1.0
 agentrecall skills --apply
 ```
 
@@ -99,26 +101,31 @@ Write a small policy, not a dump of every command you ever approved:
 allow_shell:
   - git status
   - git diff
+  - agentrecall
 deny_shell:
   - git push --force
 allow_fetch:
   - github.com
 workspace_write: true
-external_write: []
+external_write:
+  - ~/.agents/history
 ```
 
 `agentrecall permissions --apply` turns that into:
 
 | Agent | File | What is written |
 | --- | --- | --- |
-| Claude Code | `~/.claude/settings.json` or project `.claude/settings.json` | `Bash(git status:*)`, `WebFetch(domain:github.com)`, optional `Edit`/`Write` |
-| Cursor CLI | `~/.cursor/cli-config.json` | `Shell(git status)`, `WebFetch(github.com)` (user-global only) |
+| Claude Code | `~/.claude/settings.json` or project `.claude/settings.json` | `Bash(git status:*)`, `WebFetch(domain:github.com)`, optional `Edit`/`Write`, `additionalDirectories`, `sandbox.filesystem.allowWrite` |
+| Cursor CLI | `~/.cursor/cli-config.json` | `Shell(git status)`, `Shell(agentrecall)`, `WebFetch(github.com)` (user-global only; no extra-root mapping) |
 | Codex | `~/.codex/rules/agentrecall.rules` or project `.codex/rules/agentrecall.rules` | `prefix_rule` allow/forbidden |
-| OpenCode | `opencode.json` | `permission.bash` / `webfetch` / `edit` |
+| Codex | `~/.codex/config.toml` or project `.codex/config.toml` | `sandbox_workspace_write.writable_roots` for `external_write` |
+| OpenCode | `opencode.json` | `permission.bash` / `webfetch` / `edit` / `external_directory` |
+
+The default policy allowlists `agentrecall` and grants `~/.agents/history` so history search can update the index without a one-off sandbox prompt. Add more paths under `external_write` if you also want `~/.agents/skills` writable.
 
 Existing unrelated allow rules are kept. Previously generated `agentrecall` rules are replaced on the next apply (tracked in `permissions.managed.json`, not for git).
 
-Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassPermissions` / run-everything modes, Seatbelt vs Codex sandbox.
+Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassPermissions` / run-everything modes, Cursor IDE Auto-review, Seatbelt profiles.
 
 See [`examples/permissions.yaml`](examples/permissions.yaml).
 

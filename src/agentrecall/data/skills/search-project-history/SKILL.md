@@ -28,6 +28,8 @@ Search local chats from Cursor, Claude Code, and Codex for the current project. 
 
 If `agentrecall` is missing, tell the user to install it and stop. Do not invent transcript paths.
 
+The history index is `~/.agents/history/index.sqlite`. That path is outside the project workspace. After `agentrecall permissions --apply`, Claude, Codex, and OpenCode get write access to it; Cursor CLI allowlists `agentrecall` but still has no extra-root mapping. If a sandbox blocks the command, request the permission once and continue. Do not scrape transcript files yourself.
+
 Default to the current project:
 
 ```bash

@@ -7,10 +7,12 @@ allow_shell:
   - git log
   - ls
   - pytest
+  - agentrecall
 deny_shell:
   - git push --force
   - git push -f
 allow_fetch:
   - github.com
 workspace_write: true
-external_write: []
+external_write:
+  - ~/.agents/history
