@@ -2,7 +2,7 @@
 
 Keep skills, global instructions, a **small permission policy**, and searchable project history in one place: `~/.agents`.
 
-The CLI is `agentrecall` (previously `dotagents`). It does not rename `~/.agents` — Cursor, Codex, and OpenCode already read that folder. Claude Code does not, so this CLI links only where a tool cannot see it. It cannot resume a Claude session inside Cursor. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
+The CLI is `agentrecall` (previously `dotagents`). Cursor, Codex, and OpenCode already read `~/.agents`; Claude Code does not, so this CLI links only where a tool cannot see it. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
 
 ## What syncs
 
@@ -12,8 +12,8 @@ The CLI is `agentrecall` (previously `dotagents`). It does not rename `~/.agents
 | Global instructions | Yes | Canonical `~/.agents/AGENTS.md`. File symlink (or hardlink) to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. |
 | Project instructions | Yes, with a shim | Repo `AGENTS.md` is the source. `agentrecall project` writes `CLAUDE.md` containing `@AGENTS.md` if that file is missing. |
 | Chats | Search only | Native JSONL stays put. SQLite FTS index at `~/.agents/history/index.sqlite`. |
-| Permissions | Partial | Canonical `permissions.yaml`. Generates Claude / Cursor CLI / Codex / OpenCode rules. |
-| MCP tool ids, YOLO modes, OS sandboxes | No | Product-specific; not translated. |
+| Permissions | Partial | Canonical `permissions.yaml`. Shell/fetch rules for every agent, plus `external_write` extra roots for Claude, Codex, and OpenCode. Cursor CLI gets allowlisted commands only. |
+| MCP ids, YOLO modes, full OS sandbox profiles | No | Product-specific; not copied. |
 | Cursor User Rules | No | They live in the Cursor UI, not a documented file. Paste the same text into **Customize → Rules**. |
 
 ## Why not copy?
@@ -27,13 +27,21 @@ Skill **folders** are directory symlinks (POSIX cannot hardlink directories). In
 macOS and Linux. Python 3.11+. `uv` on `PATH`.
 
 ```bash
-uv tool install git+https://github.com/bluearpit/agentrecall.git
-# or pin the 0.1.0 release:
 uv tool install git+https://github.com/bluearpit/agentrecall.git@v0.1.0
+# or latest from main:
+# uv tool install git+https://github.com/bluearpit/agentrecall.git
 agentrecall skills --apply
+agentrecall permissions init --apply
+agentrecall permissions --apply
 ```
 
-That puts `agentrecall` on `PATH` and links the bundled `search-project-history` skill into `~/.agents/skills` (and into Claude Code). Cursor, Codex, and OpenCode already read that folder.
+That puts `agentrecall` on `PATH`, links the bundled `search-project-history` skill into `~/.agents/skills` (and into Claude Code), and grants `~/.agents/history` to Claude, Codex, and OpenCode so the search index can update. Cursor, Codex, and OpenCode already read `~/.agents/skills`.
+
+Then, in a project, build the index once:
+
+```bash
+agentrecall history reindex --cwd .
+```
 
 From a checkout:
 
@@ -85,11 +93,11 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
 | Claude Code | `~/.claude/skills` (needs link) | `~/.claude/CLAUDE.md` | `~/.claude/projects/**/*.jsonl` |
 | Cursor | reads `~/.agents/skills` | User Rules in the UI | `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` |
 | Codex | reads `~/.agents/skills` | `~/.codex/AGENTS.md` | `~/.codex/sessions/**/*.jsonl` |
-| OpenCode | reads `~/.agents/skills` | — | — |
+| OpenCode | reads `~/.agents/skills` | — | not indexed |
 
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_CONFIG_HOME` are honored.
 
-History is keyed by project directory (and git root when present). It is **not** stored in the git repo. Do not commit `~/.agents/history/`.
+History is keyed by project directory (and git root when present). It is **not** stored in the git repo. Do not commit `~/.agents/history/`. Searching chats is not the same as resuming a Claude session inside Cursor.
 
 The bundled skill `search-project-history` is installed into `~/.agents/skills` on `agentrecall skills --apply`, then linked into Claude Code like any other skill. Agents should run `agentrecall history search "<query>" --cwd .` instead of scraping transcript files themselves.
 
@@ -125,7 +133,7 @@ The default policy allowlists `agentrecall` and grants `~/.agents/history` so hi
 
 Existing unrelated allow rules are kept. Previously generated `agentrecall` rules are replaced on the next apply (tracked in `permissions.managed.json`, not for git).
 
-Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassPermissions` / run-everything modes, Cursor IDE Auto-review, Seatbelt profiles.
+Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassPermissions` / run-everything modes, Cursor's sandbox prompt for writes outside the project, or full Seatbelt/Bubblewrap profiles.
 
 See [`examples/permissions.yaml`](examples/permissions.yaml).
 
