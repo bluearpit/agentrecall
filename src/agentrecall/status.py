@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agentrecall import __version__
 from agentrecall.layout import AgentName, Layout
 from agentrecall.linking import dirs_identical, is_linked_to, resolve_link_target
 from agentrecall.skills import extra_claude_skills, skill_dirs
@@ -26,6 +27,7 @@ def skill_state(canonical: Path, dest: Path) -> str:
 
 def status_lines(layout: Layout) -> list[str]:
     lines = [
+        f"version:   {__version__}",
         f"canonical: {layout.agents_home}",
         f"  AGENTS.md: {_file_state(layout.agents_instructions)}",
         f"  skills:    {layout.agents_skills} ({len(skill_dirs(layout.agents_skills))} skills)",

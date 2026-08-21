@@ -27,7 +27,7 @@ Skill **folders** are directory symlinks (POSIX cannot hardlink directories). In
 macOS and Linux. Python 3.11+. `uv` on `PATH`.
 
 ```bash
-uv tool install git+https://github.com/bluearpit/agentrecall.git@v0.1.0
+uv tool install git+https://github.com/bluearpit/agentrecall.git@v0.2.0
 # or latest from main:
 # uv tool install git+https://github.com/bluearpit/agentrecall.git
 agentrecall skills --apply
@@ -42,6 +42,8 @@ Then, in a project, build the index once:
 ```bash
 agentrecall history reindex --cwd .
 ```
+
+The CLI checks GitHub at most once a day and prints a notice when a newer release exists. It does **not** upgrade by itself. `agentrecall upgrade` is dry-run; `agentrecall upgrade --apply` installs the latest GitHub release tag. Agents should ask before applying.
 
 From a checkout:
 
@@ -58,6 +60,8 @@ Write commands are **dry-run unless `--apply`**.
 
 ```bash
 agentrecall status
+agentrecall upgrade             # dry-run
+agentrecall upgrade --apply     # install the latest GitHub release tag
 agentrecall skills              # dry-run
 agentrecall skills --apply      # link ~/.agents/skills into Claude Code
 agentrecall skills --apply adopt
@@ -65,6 +69,10 @@ agentrecall instructions --apply
 agentrecall project --apply     # CLAUDE.md -> @AGENTS.md
 agentrecall history reindex --cwd .
 agentrecall history search "the decision about X" --cwd .
+agentrecall history search "the decision about X" --cwd ~/work/other-app
+agentrecall history search "the decision about X" --all
+agentrecall history search "the decision about X" --cwd . --sort recent
+agentrecall history show ~/.claude/projects/.../sess.jsonl --grep "the decision"
 agentrecall history list --cwd .
 agentrecall history list --cwd . --since 2026-08-01
 agentrecall history commands --cwd .
@@ -97,9 +105,9 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
 
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_CONFIG_HOME` are honored.
 
-History is keyed by project directory (and git root when present). It is **not** stored in the git repo. Do not commit `~/.agents/history/`. Searching chats is not the same as resuming a Claude session inside Cursor.
+History is keyed by project directory (and git root when present). Search, list, and commands default to the current project (`--cwd .`). Pass `--cwd /path/to/project` for one other repo, or `--all` for every indexed project. It is **not** stored in the git repo. Do not commit `~/.agents/history/`. Searching chats is not the same as resuming a Claude session inside Cursor.
 
-The bundled skill `search-project-history` is installed into `~/.agents/skills` on `agentrecall skills --apply`, then linked into Claude Code like any other skill. Agents should run `agentrecall history search "<query>" --cwd .` instead of scraping transcript files themselves.
+The bundled skill `search-project-history` is installed into `~/.agents/skills` on `agentrecall skills --apply`, then linked into Claude Code like any other skill. Agents should run `agentrecall history search "<query>" --cwd .` to triage the current repo (or `--cwd <path>` / `--all` when the question is not about this repo), then `agentrecall history show <source_path> --grep "<term>"` to verify, instead of scraping transcript files themselves.
 
 ## Permissions
 

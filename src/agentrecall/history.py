@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,9 +15,12 @@ from agentrecall.layout import AgentName, Layout
 MAX_BODY_CHARS = 200_000
 MAX_COMMAND_CHARS = 8_000
 MAX_COMMANDS_PER_SESSION = 1_000
+MAX_TURN_CHARS = 8_000
 SNIPPET_RADIUS = 80
-SCHEMA_VERSION = 2
+SNIPPET_TOKENS = 24
+SCHEMA_VERSION = 3
 COMMAND_KINDS = ("test", "http", "git", "python", "docker", "other")
+SEARCH_SORTS = ("relevance", "recent")
 
 _SKIP_KEYS = frozenset(
     {
@@ -86,13 +89,71 @@ class SearchHit:
     snippet: str
 
 
+@dataclass(frozen=True, slots=True)
+class Turn:
+    role: str
+    text: str
+    occurred_at: str | None = None
+
+
 def encode_claude_project(path: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", path)
 
 
 def encode_cursor_project(path: str) -> str:
-    stripped = path.lstrip("/")
-    return stripped.replace("/", "-").replace("_", "-")
+    return path.lstrip("/").replace("/", "-")
+
+
+def _claude_encode_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "-", name)
+
+
+def decode_encoded_project(
+    encoded: str,
+    *,
+    root: Path,
+    encode_name: Callable[[str], str] | None = None,
+) -> Path | None:
+    """Rebuild an existing path from a slash-to-hyphen (or Claude) encoding."""
+    remaining = encoded.lstrip("-")
+    if not remaining:
+        return None
+    namer = encode_name if encode_name is not None else (lambda name: name)
+    current = root
+    while remaining:
+        matches: list[tuple[int, Path, str]] = []
+        for child in _dir_children(current):
+            token = namer(child.name)
+            if not token:
+                continue
+            if remaining != token and not remaining.startswith(f"{token}-"):
+                continue
+            rest = remaining[len(token) :]
+            if rest.startswith("-"):
+                rest = rest[1:]
+            matches.append((len(token), child, rest))
+        if not matches:
+            return None
+        matches.sort(key=lambda item: item[0], reverse=True)
+        _, current, remaining = matches[0]
+    return current
+
+
+def _dir_children(current: Path) -> list[Path]:
+    if not current.is_dir():
+        return []
+    try:
+        entries = list(current.iterdir())
+    except OSError:
+        return []
+    children: list[Path] = []
+    for entry in entries:
+        try:
+            if entry.is_dir():
+                children.append(entry)
+        except OSError:
+            continue
+    return children
 
 
 def git_toplevel(cwd: Path) -> Path | None:
@@ -609,20 +670,192 @@ def _is_indexable_event(agent: AgentName, payload: dict[str, object]) -> bool:
     return False
 
 
-def infer_cwd_from_source_path(agent: AgentName, path: Path) -> str | None:
+def agent_from_source_path(path: Path) -> AgentName | None:
+    parts = path.parts
+    if "agent-transcripts" in parts:
+        return AgentName.cursor
+    posix = path.as_posix()
+    if "/.cursor/" in posix or posix.startswith(".cursor/"):
+        return AgentName.cursor
+    if "/.claude/" in posix or posix.startswith(".claude/"):
+        return AgentName.claude
+    if "/.codex/" in posix or posix.startswith(".codex/"):
+        return AgentName.codex
+    return None
+
+
+def _role_for_event(agent: AgentName, payload: dict[str, object]) -> str | None:
+    if agent is AgentName.claude:
+        event_type = payload.get("type")
+        if event_type in {"user", "assistant"}:
+            return str(event_type)
+        return None
+    if agent is AgentName.cursor:
+        role = payload.get("role")
+        if role in {"user", "assistant"}:
+            return str(role)
+        return None
+    if agent is AgentName.codex:
+        event_type = payload.get("type")
+        nested = payload.get("payload")
+        if event_type == "event_msg" and isinstance(nested, dict):
+            if nested.get("type") == "user_message":
+                return "user"
+            return None
+        if event_type == "response_item" and isinstance(nested, dict):
+            role = nested.get("role")
+            if role in {"user", "assistant"}:
+                return str(role)
+        return None
+    return None
+
+
+def _text_from_content(content: object) -> list[str]:
+    if isinstance(content, str):
+        stripped = content.strip()
+        return [stripped] if stripped else []
+    if not isinstance(content, list):
+        return []
+    texts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            stripped = part.strip()
+            if stripped:
+                texts.append(stripped)
+            continue
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") in {"tool_use", "tool_result"}:
+            continue
+        for key in ("text", "output_text", "message"):
+            value = part.get(key)
+            if isinstance(value, str) and value.strip():
+                texts.append(value.strip())
+                break
+    return texts
+
+
+def _texts_from_payload(agent: AgentName, payload: dict[str, object]) -> list[str]:
+    blobs: list[object] = []
+    if agent is AgentName.codex:
+        nested = payload.get("payload")
+        if isinstance(nested, dict):
+            message = nested.get("message")
+            if isinstance(message, str):
+                blobs.append(message)
+            blobs.append(nested.get("content"))
+    else:
+        message = payload.get("message")
+        if isinstance(message, dict):
+            blobs.append(message.get("content"))
+        elif isinstance(message, str):
+            blobs.append(message)
+        blobs.append(payload.get("content"))
+    texts: list[str] = []
+    for blob in blobs:
+        texts.extend(_text_from_content(blob))
+    return texts
+
+
+def iter_transcript_turns(agent: AgentName, path: Path) -> list[Turn]:
+    turns: list[Turn] = []
+    last_timestamp: str | None = None
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                timestamp = payload.get("timestamp")
+                if isinstance(timestamp, str) and timestamp.strip():
+                    last_timestamp = _normalize_timestamp(timestamp)
+                occurred = last_timestamp
+                role = _role_for_event(agent, payload)
+                texts = _texts_from_payload(agent, payload) if role is not None else []
+                if role is not None and texts:
+                    turns.append(
+                        Turn(role=role, text="\n".join(texts), occurred_at=occurred)
+                    )
+                for command in _extract_commands(agent, payload, occurred_at=occurred):
+                    turns.append(
+                        Turn(role="command", text=command.command, occurred_at=occurred)
+                    )
+    except OSError:
+        return []
+    return turns
+
+
+def select_turns(
+    turns: list[Turn],
+    *,
+    grep: str | None,
+    context: int = 0,
+) -> list[Turn]:
+    if grep is None or not grep.strip():
+        return turns
+    needle = grep.strip().lower()
+    matched = [index for index, turn in enumerate(turns) if needle in turn.text.lower()]
+    if not matched:
+        return []
+    window = max(0, context)
+    keep: set[int] = set()
+    last = len(turns)
+    for index in matched:
+        start = max(0, index - window)
+        end = min(last, index + window + 1)
+        keep.update(range(start, end))
+    return [turns[index] for index in sorted(keep)]
+
+
+def clip_turn_text(text: str) -> str:
+    if len(text) <= MAX_TURN_CHARS:
+        return text
+    return text[: MAX_TURN_CHARS - 3] + "..."
+
+
+def format_turn(turn: Turn) -> str:
+    return f"{turn.role}\n{clip_turn_text(turn.text)}"
+
+
+def load_turns(path: Path) -> list[Turn]:
+    if not path.is_file():
+        raise FileNotFoundError(f"transcript not found: {path}")
+    agent = agent_from_source_path(path)
+    if agent is None:
+        raise ValueError(f"cannot detect agent from path {path}")
+    return iter_transcript_turns(agent, path)
+
+
+def infer_cwd_from_source_path(
+    agent: AgentName,
+    path: Path,
+    *,
+    root: Path | None = None,
+) -> str | None:
+    walk_root = Path("/") if root is None else root
     if agent is AgentName.claude:
         encoded = path.parent.name
-        if encoded.startswith("-"):
-            return encoded.replace("-", "/")
-        return None
+        if not encoded.startswith("-"):
+            return None
+        decoded = decode_encoded_project(
+            encoded,
+            root=walk_root,
+            encode_name=_claude_encode_name,
+        )
+        return None if decoded is None else str(decoded)
     if agent is AgentName.cursor:
         parts = path.parts
         if "agent-transcripts" not in parts:
             return None
         encoded = parts[parts.index("agent-transcripts") - 1]
-        if encoded.startswith("Users-") or encoded.startswith("home-"):
-            return "/" + encoded.replace("-", "/")
-        return None
+        decoded = decode_encoded_project(encoded, root=walk_root)
+        return None if decoded is None else str(decoded)
     return None
 
 
@@ -788,17 +1021,41 @@ def _fts_query(raw: str) -> str:
 
 def _snippet(body: str, query: str) -> str:
     lowered = body.lower()
-    needle = query.split()[0].lower() if query.split() else query.lower()
-    index = lowered.find(needle)
+    tokens = [token.lower() for token in query.split() if token.strip()]
+    needles = list(reversed(tokens)) if tokens else [query.lower()]
+    index = -1
+    needle_len = 0
+    for needle in needles:
+        found = lowered.find(needle)
+        if found >= 0:
+            index = found
+            needle_len = len(needle)
+            break
     if index < 0:
         compact = re.sub(r"\s+", " ", body).strip()
         return compact[: SNIPPET_RADIUS * 2]
     start = max(0, index - SNIPPET_RADIUS)
-    end = min(len(body), index + len(needle) + SNIPPET_RADIUS)
+    end = min(len(body), index + needle_len + SNIPPET_RADIUS)
     fragment = re.sub(r"\s+", " ", body[start:end]).strip()
     prefix = "..." if start > 0 else ""
     suffix = "..." if end < len(body) else ""
     return f"{prefix}{fragment}{suffix}"
+
+
+def _compact_snippet(raw: str) -> str:
+    return re.sub(r"\s+", " ", raw).strip()
+
+
+def _choose_snippet(body: str, query: str, fts_snippet: str) -> str:
+    homemade = _snippet(body, query)
+    compact = _compact_snippet(fts_snippet)
+    tokens = [token.lower() for token in query.split() if token.strip()]
+    if not compact or not tokens:
+        return homemade
+    later = tokens[-1]
+    if later in compact.lower():
+        return compact
+    return homemade
 
 
 def _fetch_limit(*, cwd: Path | None, all_projects: bool, limit: int) -> int:
@@ -815,11 +1072,23 @@ def search(
     agent: str | None = None,
     all_projects: bool = False,
     limit: int = 20,
+    sort: str = "relevance",
 ) -> list[SearchHit]:
+    if sort not in SEARCH_SORTS:
+        raise ValueError(f"unknown search sort {sort!r}")
     reindex(layout, cwd=cwd, all_projects=all_projects)
     connection = connect(layout.history_db)
-    sql = """
-        SELECT s.agent, s.source_path, s.project_cwd, s.git_root, s.started_at, s.title, s.body
+    sql = f"""
+        SELECT
+            s.agent,
+            s.source_path,
+            s.project_cwd,
+            s.git_root,
+            s.started_at,
+            s.title,
+            s.body,
+            bm25(sessions_fts) AS rank,
+            snippet(sessions_fts, 2, '', '', '...', {SNIPPET_TOKENS}) AS fts_snippet
         FROM sessions_fts
         JOIN sessions AS s ON s.source_path = sessions_fts.source_path
         WHERE sessions_fts MATCH ?
@@ -828,7 +1097,10 @@ def search(
     if agent is not None:
         sql += " AND s.agent = ?"
         params.append(agent)
-    sql += " ORDER BY s.started_at DESC LIMIT ?"
+    if sort == "recent":
+        sql += " ORDER BY s.started_at DESC LIMIT ?"
+    else:
+        sql += " ORDER BY rank ASC, s.started_at DESC LIMIT ?"
     params.append(_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit))
     rows = list(connection.execute(sql, params))
     connection.close()
@@ -839,6 +1111,7 @@ def search(
         record = _session_from_row(row)
         if scope is not None and not belongs_to_project(record, scope):
             continue
+        snippet = _choose_snippet(row["body"], query, row["fts_snippet"] or "")
         hits.append(
             SearchHit(
                 agent=row["agent"],
@@ -846,7 +1119,7 @@ def search(
                 project_cwd=row["project_cwd"],
                 started_at=row["started_at"],
                 title=row["title"],
-                snippet=_snippet(row["body"], query),
+                snippet=snippet,
             )
         )
         if len(hits) >= limit:

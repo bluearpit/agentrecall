@@ -11,11 +11,15 @@ import typer
 
 from agentrecall import __version__
 from agentrecall.history import (
+    SEARCH_SORTS,
+    format_turn,
     list_commands,
     list_sessions,
+    load_turns,
     parse_history_bound,
     reindex,
     search,
+    select_turns,
 )
 from agentrecall.instructions import sync_instructions
 from agentrecall.layout import Layout
@@ -29,6 +33,13 @@ from agentrecall.permissions import (
 from agentrecall.project import sync_project
 from agentrecall.skills import adopt_plan, render_and_apply, sync_skills
 from agentrecall.status import status_lines
+from agentrecall.upgrade import (
+    apply_upgrade,
+    fetch_latest_version,
+    is_newer,
+    notice_if_outdated,
+    upgrade_plan,
+)
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -66,6 +77,7 @@ def _version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
+    ctx: typer.Context,
     version: Annotated[
         bool,
         typer.Option(
@@ -76,13 +88,49 @@ def main(
         ),
     ] = False,
 ) -> None:
-    return
+    if ctx.invoked_subcommand == "upgrade":
+        return
+    notice = notice_if_outdated(_layout())
+    if notice is not None:
+        typer.echo(notice, err=True)
 
 
 @app.command("status")
 def status_cmd() -> None:
     """Show canonical ~/.agents state and per-agent coverage."""
     _echo_lines(status_lines(_layout()))
+
+
+@app.command("upgrade")
+def upgrade_cmd(
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Run uv tool upgrade. Default is dry-run."),
+    ] = False,
+) -> None:
+    """Check GitHub for a newer release and optionally upgrade."""
+    latest = fetch_latest_version()
+    lines, failed = upgrade_plan(latest=latest)
+    if not apply:
+        typer.echo("dry-run (pass --apply to write)")
+        _echo_lines(lines)
+        if failed:
+            raise typer.Exit(code=1)
+        return
+    if failed:
+        _echo_lines(lines)
+        raise typer.Exit(code=1)
+    if latest is None or not is_newer(latest, __version__):
+        _echo_lines(lines)
+        return
+    try:
+        typer.echo(apply_upgrade(latest))
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except RuntimeError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @skills_app.callback(invoke_without_command=True)
@@ -258,11 +306,11 @@ def _compact_command(command: str) -> str:
 def history_reindex(
     cwd: Annotated[
         Path | None,
-        typer.Option("--cwd", help="Project directory. Defaults to the current directory."),
+        typer.Option("--cwd", help="Project to index. Defaults to the current directory."),
     ] = None,
     all_projects: Annotated[
         bool,
-        typer.Option("--all", help="Index transcripts for every project."),
+        typer.Option("--all", help="Index every project instead of --cwd."),
     ] = False,
 ) -> None:
     """Scan native JSONL transcripts into ~/.agents/history/index.sqlite."""
@@ -279,7 +327,7 @@ def history_search(
     query: Annotated[str, typer.Argument(help="Full-text query.")],
     cwd: Annotated[
         Path | None,
-        typer.Option("--cwd", help="Project directory. Defaults to the current directory."),
+        typer.Option("--cwd", help="Project to search. Defaults to the current directory."),
     ] = None,
     agent: Annotated[
         str | None,
@@ -287,11 +335,18 @@ def history_search(
     ] = None,
     all_projects: Annotated[
         bool,
-        typer.Option("--all", help="Search across every project."),
+        typer.Option("--all", help="Search every project instead of --cwd."),
     ] = False,
+    sort: Annotated[
+        str,
+        typer.Option("--sort", help="relevance (default) or recent."),
+    ] = "relevance",
     limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 20,
 ) -> None:
-    """Search indexed chats for this project."""
+    """Search indexed chats for a project (or every project with --all)."""
+    if sort not in SEARCH_SORTS:
+        typer.echo(f"Error: unknown sort {sort!r}", err=True)
+        raise typer.Exit(code=1)
     hits = search(
         _layout(),
         query,
@@ -299,6 +354,7 @@ def history_search(
         agent=agent,
         all_projects=all_projects,
         limit=limit,
+        sort=sort,
     )
     if not hits:
         typer.echo("no matches")
@@ -310,11 +366,45 @@ def history_search(
         typer.echo(f"  {hit.snippet}")
 
 
+@history_app.command("show")
+def history_show(
+    source: Annotated[
+        Path,
+        typer.Argument(help="Path to a native JSONL transcript."),
+    ],
+    grep: Annotated[
+        str | None,
+        typer.Option("--grep", help="Print turns containing this text."),
+    ] = None,
+    context: Annotated[
+        int,
+        typer.Option("--context", min=0, max=20, help="Turns to include around each grep hit."),
+    ] = 0,
+) -> None:
+    """Print normalized role+text turns from a native transcript."""
+    try:
+        turns = load_turns(source.expanduser())
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    selected = select_turns(turns, grep=grep, context=context)
+    if not selected:
+        typer.echo("no matches")
+        return
+    for index, turn in enumerate(selected):
+        if index:
+            typer.echo("")
+        typer.echo(format_turn(turn))
+
+
 @history_app.command("list")
 def history_list(
     cwd: Annotated[
         Path | None,
-        typer.Option("--cwd", help="Project directory. Defaults to the current directory."),
+        typer.Option("--cwd", help="Project to list. Defaults to the current directory."),
     ] = None,
     agent: Annotated[
         str | None,
@@ -322,7 +412,7 @@ def history_list(
     ] = None,
     all_projects: Annotated[
         bool,
-        typer.Option("--all", help="List sessions for every project."),
+        typer.Option("--all", help="List sessions for every project instead of --cwd."),
     ] = False,
     since: Annotated[
         str | None,
@@ -334,7 +424,7 @@ def history_list(
     ] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, max=200)] = 20,
 ) -> None:
-    """List recent sessions for this project."""
+    """List recent sessions for a project (or every project with --all)."""
     since_at, until_at = _time_bounds(since, until)
     hits = list_sessions(
         _layout(),
@@ -356,7 +446,7 @@ def history_list(
 def history_commands(
     cwd: Annotated[
         Path | None,
-        typer.Option("--cwd", help="Project directory. Defaults to the current directory."),
+        typer.Option("--cwd", help="Project to list. Defaults to the current directory."),
     ] = None,
     agent: Annotated[
         str | None,
@@ -368,7 +458,7 @@ def history_commands(
     ] = None,
     all_projects: Annotated[
         bool,
-        typer.Option("--all", help="List commands for every project."),
+        typer.Option("--all", help="List commands for every project instead of --cwd."),
     ] = False,
     since: Annotated[
         str | None,

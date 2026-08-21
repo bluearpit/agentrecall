@@ -1,6 +1,6 @@
 [project]
 name = "agentrecall"
-version = "0.1.0"
+version = "0.2.0"
 description = "Keep AI coding-agent skills, instructions, permissions, and project history in sync from ~/.agents."
 readme = "README.md"
 license = "MIT"
