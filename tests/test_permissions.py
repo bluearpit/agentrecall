@@ -143,8 +143,7 @@ def test_codex_writable_roots_merge_existing_config(home: Path, layout: Layout) 
     config = home / ".codex" / "config.toml"
     config.parent.mkdir(parents=True)
     config.write_text(
-        'notify = ["turn-ended"]\n\n[sandbox_workspace_write]\n'
-        'writable_roots = ["/tmp/notes"]\n',
+        'notify = ["turn-ended"]\n\n[sandbox_workspace_write]\nwritable_roots = ["/tmp/notes"]\n',
         encoding="utf-8",
     )
     init_policy(layout.permissions_file, dry_run=False)

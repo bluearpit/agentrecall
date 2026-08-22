@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-IGNORE_NAMES = frozenset(
-    {".DS_Store", "__pycache__", ".git", "node_modules", "profiles", ".venv"}
-)
+IGNORE_NAMES = frozenset({".DS_Store", "__pycache__", ".git", "node_modules", "profiles", ".venv"})
 
 
 class LinkMode(StrEnum):

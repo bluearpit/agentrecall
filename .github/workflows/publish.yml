@@ -1,0 +1,79 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4.4.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.11"
+          enable-cache: false
+      - name: Check tag matches package version
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          uv run python - <<'PY'
+          import os
+          import pathlib
+          import tomllib
+
+          version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]
+          tag = os.environ["TAG"].removeprefix("v")
+          if tag != version:
+              raise SystemExit(f"release tag {os.environ['TAG']!r} does not match {version}")
+          PY
+      - name: Build
+        run: uv build --no-sources
+      - name: Smoke test wheel
+        run: |
+          package_version="$(uv version --short)"
+          uv run --isolated --no-project \
+            --with "dist/agentrecall_cli-${package_version}-py3-none-any.whl" \
+            tests/smoke_test.py
+      - name: Smoke test sdist
+        run: |
+          package_version="$(uv version --short)"
+          uv run --isolated --no-project \
+            --with "dist/agentrecall_cli-${package_version}.tar.gz" \
+            tests/smoke_test.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'release'
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/p/agentrecall-cli
+    permissions:
+      id-token: write
+    steps:
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - name: Publish
+        run: uv publish --trusted-publishing always

@@ -242,13 +242,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
         )
         """
     )
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS commands_by_source ON commands (source_path)"
-    )
+    connection.execute("CREATE INDEX IF NOT EXISTS commands_by_source ON commands (source_path)")
     connection.execute("CREATE INDEX IF NOT EXISTS commands_by_kind ON commands (kind)")
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS commands_by_occurred ON commands (occurred_at)"
-    )
+    connection.execute("CREATE INDEX IF NOT EXISTS commands_by_occurred ON commands (occurred_at)")
     return connection
 
 
@@ -779,13 +775,9 @@ def iter_transcript_turns(agent: AgentName, path: Path) -> list[Turn]:
                 role = _role_for_event(agent, payload)
                 texts = _texts_from_payload(agent, payload) if role is not None else []
                 if role is not None and texts:
-                    turns.append(
-                        Turn(role=role, text="\n".join(texts), occurred_at=occurred)
-                    )
+                    turns.append(Turn(role=role, text="\n".join(texts), occurred_at=occurred))
                 for command in _extract_commands(agent, payload, occurred_at=occurred):
-                    turns.append(
-                        Turn(role="command", text=command.command, occurred_at=occurred)
-                    )
+                    turns.append(Turn(role="command", text=command.command, occurred_at=occurred))
     except OSError:
         return []
     return turns

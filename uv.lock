@@ -3,8 +3,8 @@ revision = 2
 requires-python = ">=3.11"
 
 [[package]]
-name = "agentrecall"
-version = "0.2.0"
+name = "agentrecall-cli"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "pyyaml" },

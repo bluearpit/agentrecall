@@ -26,12 +26,12 @@ Search local chats from Cursor, Claude Code, and Codex. Transcripts stay in each
 
 ## Command
 
-`agentrecall` must be on `PATH` (`uv tool install git+https://github.com/bluearpit/agentrecall.git@v0.2.0` or `uv tool install -e .` from a checkout).
+`agentrecall` must be on `PATH` (`uv tool install agentrecall-cli` or `uv tool install -e .` from a checkout).
 
 If `agentrecall` is missing, tell the user to install it and stop. Do not invent transcript paths.
 
 ```bash
-uv tool install git+https://github.com/bluearpit/agentrecall.git@v0.2.0
+uv tool install agentrecall-cli
 ```
 
 If the CLI prints that a newer version is available, ask the user before upgrading. Do not run `upgrade --apply` on your own.

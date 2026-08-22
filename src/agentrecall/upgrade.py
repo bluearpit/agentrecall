@@ -18,7 +18,7 @@ from agentrecall.layout import Layout
 SKIP_ENV = "AGENTRECALL_SKIP_UPDATE_CHECK"
 CHECK_INTERVAL = timedelta(hours=24)
 RELEASES_URL = "https://api.github.com/repos/bluearpit/agentrecall/releases/latest"
-REPO_GIT = "git+https://github.com/bluearpit/agentrecall.git"
+PACKAGE = "agentrecall-cli"
 
 
 def parse_version(raw: str) -> tuple[int, ...]:
@@ -112,7 +112,7 @@ def cached_latest(
 
 def install_spec(latest: str) -> str:
     version = latest.strip().lstrip("vV")
-    return f"{REPO_GIT}@v{version}"
+    return f"{PACKAGE}=={version}"
 
 
 def upgrade_argv(latest: str) -> tuple[str, ...]:

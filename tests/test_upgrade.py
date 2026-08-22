@@ -9,6 +9,7 @@ from agentrecall.cli import app
 from agentrecall.layout import Layout
 from agentrecall.upgrade import (
     cached_latest,
+    install_spec,
     is_newer,
     notice_if_outdated,
     parse_version,
@@ -24,6 +25,7 @@ def test_parse_and_compare_versions() -> None:
     assert not is_newer("0.1.0", "0.2.0")
     assert not is_newer("0.2.0", "0.2.0")
     assert is_newer("0.2", "0.1.9")
+    assert install_spec("v9.9.9") == "agentrecall-cli==9.9.9"
 
 
 def test_cached_latest_reuses_fresh_cache(layout: Layout) -> None:
@@ -73,7 +75,7 @@ def test_upgrade_plan_and_cli_dry_run(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.exit_code == 0
     assert "dry-run" in result.stdout
     assert "would upgrade" in result.stdout
-    assert "git+https://github.com/bluearpit/agentrecall.git@v9.9.9" in result.stdout
+    assert "agentrecall-cli==9.9.9" in result.stdout
 
 
 def test_upgrade_apply_runs_uv(monkeypatch: pytest.MonkeyPatch) -> None:

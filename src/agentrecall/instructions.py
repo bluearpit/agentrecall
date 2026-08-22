@@ -118,11 +118,7 @@ def instruction_link_plan(layout: Layout, mode: LinkMode) -> list[PlanItem]:
             and canonical_text
             and normalize_instructions(dest.read_text(encoding="utf-8")) == canonical_text
         ):
-            op = (
-                Op.replace_with_hardlink
-                if mode is LinkMode.hardlink
-                else Op.replace_with_symlink
-            )
+            op = Op.replace_with_hardlink if mode is LinkMode.hardlink else Op.replace_with_symlink
             items.append(
                 PlanItem(
                     op,

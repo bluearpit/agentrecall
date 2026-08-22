@@ -1,3 +1,5 @@
 """Keep AI coding-agent skills, instructions, and project history in sync."""
 
-__version__ = "0.2.0"
+from importlib.metadata import version as _distribution_version
+
+__version__ = _distribution_version("agentrecall-cli")

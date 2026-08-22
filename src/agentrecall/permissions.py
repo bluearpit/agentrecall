@@ -570,9 +570,7 @@ def sync_permissions(
 
     if user_policy is not None:
         rules = compile_native(user_policy)
-        lines.extend(
-            preview_lines(user_policy, rules, str(layout.permissions_file))
-        )
+        lines.extend(preview_lines(user_policy, rules, str(layout.permissions_file)))
         managed_user = _load_managed(layout.permissions_managed_file)
         lines.append(
             apply_claude_settings(
@@ -648,9 +646,7 @@ def sync_permissions(
         opencode_project = root / "opencode.json"
         if not opencode_project.is_file():
             opencode_project = root / ".opencode" / "opencode.json"
-        lines.append(
-            apply_opencode(opencode_project, rules, managed_project, dry_run=dry_run)
-        )
+        lines.append(apply_opencode(opencode_project, rules, managed_project, dry_run=dry_run))
         lines.append(
             "skip     Cursor CLI  (cli-config.json is user-global; project rules are not isolated)"
         )
