@@ -105,10 +105,10 @@ def status_cmd() -> None:
 def upgrade_cmd(
     apply: Annotated[
         bool,
-        typer.Option("--apply", help="Run uv tool upgrade. Default is dry-run."),
+        typer.Option("--apply", help="Install that version from PyPI. Default is dry-run."),
     ] = False,
 ) -> None:
-    """Check GitHub for a newer release and optionally upgrade."""
+    """Check GitHub for a newer release and optionally install it from PyPI."""
     latest = fetch_latest_version()
     lines, failed = upgrade_plan(latest=latest)
     if not apply:

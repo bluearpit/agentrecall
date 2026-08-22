@@ -7,7 +7,7 @@ import pytest
 from agentrecall.layout import Layout
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home_dir = tmp_path / "home"
     home_dir.mkdir()
@@ -16,6 +16,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    assert Path.home() == home_dir
+    assert home_dir.is_relative_to(tmp_path)
     return home_dir
 
 

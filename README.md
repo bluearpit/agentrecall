@@ -24,12 +24,10 @@ Skill **folders** are directory symlinks (POSIX cannot hardlink directories). In
 
 ## Install
 
-macOS and Linux. Python 3.11+. `uv` on `PATH`.
+macOS and Linux. Python 3.11+. `uv` on `PATH`. The PyPI package is [`agentrecall-cli`](https://pypi.org/project/agentrecall-cli/) (`agentrecall` is taken). That install puts the `agentrecall` command on `PATH`.
 
 ```bash
-uv tool install git+https://github.com/bluearpit/agentrecall.git@v0.2.0
-# or latest from main:
-# uv tool install git+https://github.com/bluearpit/agentrecall.git
+uv tool install agentrecall-cli
 agentrecall skills --apply
 agentrecall permissions init --apply
 agentrecall permissions --apply
@@ -37,13 +35,15 @@ agentrecall permissions --apply
 
 That puts `agentrecall` on `PATH`, links the bundled `search-project-history` skill into `~/.agents/skills` (and into Claude Code), and grants `~/.agents/history` to Claude, Codex, and OpenCode so the search index can update. Cursor, Codex, and OpenCode already read `~/.agents/skills`.
 
+One-off without installing: `uvx --from agentrecall-cli agentrecall status`. From unreleased `main`: `uv tool install git+https://github.com/bluearpit/agentrecall.git`.
+
 Then, in a project, build the index once:
 
 ```bash
 agentrecall history reindex --cwd .
 ```
 
-The CLI checks GitHub at most once a day and prints a notice when a newer release exists. It does **not** upgrade by itself. `agentrecall upgrade` is dry-run; `agentrecall upgrade --apply` installs the latest GitHub release tag. Agents should ask before applying.
+The CLI checks GitHub at most once a day and prints a notice when a newer release exists. It does **not** upgrade by itself. `agentrecall upgrade` is dry-run; `agentrecall upgrade --apply` installs that version from PyPI. Agents should ask before applying.
 
 From a checkout:
 
@@ -61,7 +61,7 @@ Write commands are **dry-run unless `--apply`**.
 ```bash
 agentrecall status
 agentrecall upgrade             # dry-run
-agentrecall upgrade --apply     # install the latest GitHub release tag
+agentrecall upgrade --apply     # install that version from PyPI
 agentrecall skills              # dry-run
 agentrecall skills --apply      # link ~/.agents/skills into Claude Code
 agentrecall skills --apply adopt
@@ -144,6 +144,21 @@ Existing unrelated allow rules are kept. Previously generated `agentrecall` rule
 Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassPermissions` / run-everything modes, Cursor's sandbox prompt for writes outside the project, or full Seatbelt/Bubblewrap profiles.
 
 See [`examples/permissions.yaml`](examples/permissions.yaml).
+
+## Development
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and how PRs merge.
+
+```bash
+uv sync --group dev
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run pytest
+```
+
+CI runs the same lint and tests on Python 3.11–3.13, then builds and smoke-tests the wheel and source distribution. The `ci` job is the merge gate: it is green only when every check passes. Tests always set `HOME` to a temporary directory.
+
+A published GitHub release also uploads to PyPI as [`agentrecall-cli`](https://pypi.org/project/agentrecall-cli/). The workflow uses Trusted Publishing (no API token). GitHub environment `pypi`; workflow `publish.yml`.
 
 ## Related tools
 

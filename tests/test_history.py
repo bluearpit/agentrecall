@@ -200,15 +200,7 @@ def test_history_indexes_shell_commands(home: Path, layout: Layout, tmp_path: Pa
 
 def test_history_indexes_codex_exec(home: Path, layout: Layout, tmp_path: Path) -> None:
     project = _project(tmp_path)
-    session = (
-        home
-        / ".codex"
-        / "sessions"
-        / "2026"
-        / "08"
-        / "10"
-        / "rollout.jsonl"
-    )
+    session = home / ".codex" / "sessions" / "2026" / "08" / "10" / "rollout.jsonl"
     _write_jsonl(
         session,
         [
@@ -242,7 +234,7 @@ def test_history_indexes_codex_exec(home: Path, layout: Layout, tmp_path: Path) 
                     "type": "custom_tool_call",
                     "name": "exec",
                     "input": (
-                        'const r = await tools.exec_command({\n'
+                        "const r = await tools.exec_command({\n"
                         '  cmd: "curl -s https://example.com",\n'
                         '  workdir: "/tmp"\n'
                         "});\n"
@@ -388,9 +380,7 @@ def test_infer_cursor_cwd_from_hyphenated_dir(tmp_path: Path) -> None:
     assert not inferred.endswith("/my/app")
 
 
-def test_parse_transcript_preserves_hyphenated_cursor_cwd(
-    home: Path, tmp_path: Path
-) -> None:
+def test_parse_transcript_preserves_hyphenated_cursor_cwd(home: Path, tmp_path: Path) -> None:
     project = tmp_path / "my-app"
     project.mkdir()
     (project / ".git").mkdir()
@@ -418,9 +408,7 @@ def test_parse_transcript_preserves_hyphenated_cursor_cwd(
     assert Path(record.project_cwd).name == "my-app"
 
 
-def test_parse_transcript_infers_hyphenated_claude_cwd(
-    home: Path, tmp_path: Path
-) -> None:
+def test_parse_transcript_infers_hyphenated_claude_cwd(home: Path, tmp_path: Path) -> None:
     project = tmp_path / "my-app"
     project.mkdir()
     (project / ".git").mkdir()
@@ -738,9 +726,7 @@ def test_search_ranks_focused_session_ahead_of_recent_filler(
     assert recent[0].source_path.endswith("recent.jsonl")
 
 
-def test_search_snippet_includes_later_term(
-    home: Path, layout: Layout, tmp_path: Path
-) -> None:
+def test_search_snippet_includes_later_term(home: Path, layout: Layout, tmp_path: Path) -> None:
     project = _project(tmp_path)
     encoded = encode_claude_project(str(project.resolve()))
     _write_jsonl(
