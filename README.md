@@ -43,7 +43,7 @@ Then, in a project, build the index once:
 agentrecall history reindex --cwd .
 ```
 
-The CLI checks PyPI at most once a day (a failed check also counts) and prints a notice when a newer `agentrecall-cli` exists. It does **not** upgrade by itself. `agentrecall upgrade` is dry-run; `agentrecall upgrade --apply` installs that version from PyPI. Agents should ask before applying.
+The CLI checks PyPI at most once a day (a failed check also counts) and prints a notice when a newer `agentrecall-cli` exists. The check is remembered in `~/.agents/history/update-check.json`; when that file cannot be written, the check is skipped and no command fails. It does **not** upgrade by itself. `agentrecall upgrade` is dry-run; `agentrecall upgrade --apply` installs that version from PyPI. Agents should ask before applying.
 
 From a checkout:
 
@@ -101,6 +101,7 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
   skills/<name>/SKILL.md    # user skills
   permissions.yaml          # portable allow/deny policy
   history/index.sqlite      # search index only; not full transcripts
+  history/update-check.json # last PyPI version check; safe to delete
 ```
 
 The instruction model is one source of truth with generated or manually synchronized adapters:

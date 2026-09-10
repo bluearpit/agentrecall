@@ -74,7 +74,20 @@ def fetch_latest_version(url: str = PYPI_URL) -> str | None:
 
 
 def update_check_file(layout: Layout) -> Path:
+    """Cache lives under history/, the one extra root sandboxed agents are granted."""
+    return layout.history_dir / "update-check.json"
+
+
+def legacy_update_check_file(layout: Layout) -> Path:
     return layout.agents_home / "update-check.json"
+
+
+def _cache_dir_writable(path: Path) -> bool:
+    """Best-effort hint. Some sandboxes report writable and then deny the write."""
+    for candidate in [path.parent, *path.parent.parents]:
+        if candidate.exists():
+            return os.access(candidate, os.W_OK)
+    return False
 
 
 def _read_update_check(path: Path) -> tuple[str | None, datetime | None]:
@@ -101,12 +114,24 @@ def _read_update_check(path: Path) -> tuple[str | None, datetime | None]:
     return latest, checked
 
 
-def _write_update_check(path: Path, *, latest: str | None, checked_at: datetime) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"latest": latest, "checked_at": checked_at.isoformat()}),
-        encoding="utf-8",
-    )
+def _write_update_check(path: Path, *, latest: str | None, checked_at: datetime) -> bool:
+    """Write the cache. Never raise: a blocked cache must not stop the command."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"latest": latest, "checked_at": checked_at.isoformat()}),
+            encoding="utf-8",
+        )
+    except OSError:
+        return False
+    return True
+
+
+def _remove_legacy_cache(layout: Layout) -> None:
+    try:
+        legacy_update_check_file(layout).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def cached_latest(
@@ -119,17 +144,22 @@ def cached_latest(
 
     A failed fetch still counts as a check, so an offline machine does not retry
     on every command. The last known version is kept until a fetch succeeds.
+    When the cache cannot be written (read-only home, strict sandbox), skip the
+    network call too and serve whatever an earlier run recorded.
     """
     moment = datetime.now(tz=UTC) if now is None else now
     path = update_check_file(layout)
     cached, checked = _read_update_check(path)
     if checked is not None and moment - checked < CHECK_INTERVAL:
         return cached
+    if not _cache_dir_writable(path):
+        return cached
     getter = fetch if fetch is not None else fetch_latest_version
     latest = getter()
     if latest is None:
         latest = cached
-    _write_update_check(path, latest=latest, checked_at=moment)
+    if _write_update_check(path, latest=latest, checked_at=moment):
+        _remove_legacy_cache(layout)
     return latest
 
 

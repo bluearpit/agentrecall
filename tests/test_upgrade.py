@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import stat
 from datetime import UTC, datetime, timedelta
 from urllib.error import URLError
 
@@ -16,6 +18,7 @@ from agentrecall.upgrade import (
     fetch_latest_version,
     install_spec,
     is_newer,
+    legacy_update_check_file,
     notice_if_outdated,
     parse_version,
     update_check_file,
@@ -135,6 +138,56 @@ def test_cached_latest_ignores_corrupt_cache(layout: Layout) -> None:
     assert cached_latest(layout, fetch=lambda: "3.0.0") == "3.0.0"
     payload = json.loads(path.read_text(encoding="utf-8"))
     assert payload["latest"] == "3.0.0"
+
+
+def test_cached_latest_lives_under_history_and_removes_legacy_file(layout: Layout) -> None:
+    legacy = legacy_update_check_file(layout)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("{}", encoding="utf-8")
+    assert cached_latest(layout, fetch=lambda: "1.2.3") == "1.2.3"
+    assert update_check_file(layout) == layout.history_dir / "update-check.json"
+    assert update_check_file(layout).is_file()
+    assert not legacy.exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+def test_cached_latest_skips_fetch_when_cache_is_read_only(
+    layout: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("AGENTRECALL_SKIP_UPDATE_CHECK", raising=False)
+    calls = {"n": 0}
+
+    def fetch() -> str | None:
+        calls["n"] += 1
+        return "9.9.9"
+
+    now = datetime(2026, 8, 21, tzinfo=UTC)
+    assert cached_latest(layout, now=now, fetch=fetch) == "9.9.9"
+    history = layout.history_dir
+    mode = history.stat().st_mode
+    history.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        stale = now + timedelta(hours=25)
+        assert cached_latest(layout, now=stale, fetch=fetch) == "9.9.9"
+        assert notice_if_outdated(layout, current="0.1.0", fetch=fetch) is not None
+    finally:
+        history.chmod(mode)
+    assert calls["n"] == 1
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory modes")
+def test_cached_latest_survives_denied_write(
+    layout: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("agentrecall.upgrade._cache_dir_writable", lambda path: True)
+    layout.history_dir.mkdir(parents=True)
+    mode = layout.history_dir.stat().st_mode
+    layout.history_dir.chmod(stat.S_IRUSR | stat.S_IXUSR)
+    try:
+        assert cached_latest(layout, fetch=lambda: "4.5.6") == "4.5.6"
+        assert not update_check_file(layout).exists()
+    finally:
+        layout.history_dir.chmod(mode)
 
 
 def test_notice_if_outdated_asks_before_upgrade(
