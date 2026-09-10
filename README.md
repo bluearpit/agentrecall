@@ -1,6 +1,6 @@
 # agentrecall
 
-[![PyPI](https://img.shields.io/pypi/v/agentrecall-cli.svg)](https://pypi.org/project/agentrecall-cli/) [![Python](https://img.shields.io/pypi/pyversions/agentrecall-cli.svg)](https://pypi.org/project/agentrecall-cli/) [![CI](https://github.com/bluearpit/agentrecall/actions/workflows/ci.yml/badge.svg)](https://github.com/bluearpit/agentrecall/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/agentrecall-cli.svg)](https://pypi.org/project/agentrecall-cli/) [![Python](https://img.shields.io/pypi/pyversions/agentrecall-cli.svg)](https://pypi.org/project/agentrecall-cli/) [![CI](https://github.com/bluearpit/agentrecall/actions/workflows/ci.yml/badge.svg)](https://github.com/bluearpit/agentrecall/actions/workflows/ci.yml) [![Downloads](https://static.pepy.tech/badge/agentrecall-cli)](https://pepy.tech/projects/agentrecall-cli)
 
 Agent Recall turns `~/.agents` into a portable home directory for coding agents. Keep skills, global instructions, a **small permission policy**, and searchable project history in one place, then expose each part through the adapter its agent understands.
 
