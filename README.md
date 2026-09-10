@@ -43,7 +43,7 @@ Then, in a project, build the index once:
 agentrecall history reindex --cwd .
 ```
 
-The CLI checks GitHub at most once a day and prints a notice when a newer release exists. It does **not** upgrade by itself. `agentrecall upgrade` is dry-run; `agentrecall upgrade --apply` installs that version from PyPI. Agents should ask before applying.
+The CLI checks PyPI at most once a day (a failed check also counts) and prints a notice when a newer `agentrecall-cli` exists. It does **not** upgrade by itself. `agentrecall upgrade` is dry-run; `agentrecall upgrade --apply` installs that version from PyPI. Agents should ask before applying.
 
 From a checkout:
 

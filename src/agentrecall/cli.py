@@ -125,7 +125,7 @@ def upgrade_cmd(
         typer.Option("--apply", help="Install that version from PyPI. Default is dry-run."),
     ] = False,
 ) -> None:
-    """Check GitHub for a newer release and optionally install it from PyPI."""
+    """Check PyPI for a newer release and optionally install it."""
     latest = fetch_latest_version()
     lines, failed = upgrade_plan(latest=latest)
     if not apply:
