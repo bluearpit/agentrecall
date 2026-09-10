@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import sqlite3
+import time
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
+from typing import ParamSpec, TypeVar
 
 from agentrecall.layout import AgentName, Layout
 
@@ -21,6 +26,11 @@ SNIPPET_TOKENS = 24
 SCHEMA_VERSION = 3
 COMMAND_KINDS = ("test", "http", "git", "python", "docker", "other")
 SEARCH_SORTS = ("relevance", "recent")
+SQLITE_BUSY_TIMEOUT_MS = 5_000
+SQLITE_WRITE_ATTEMPTS = 4
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 _SKIP_KEYS = frozenset(
     {
@@ -201,8 +211,10 @@ def classify_command_kind(command: str) -> str:
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(db_path)
+    connection = sqlite3.connect(db_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
     connection.row_factory = sqlite3.Row
+    connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
+    connection.execute("PRAGMA journal_mode = WAL")
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS sessions (
@@ -245,19 +257,24 @@ def connect(db_path: Path) -> sqlite3.Connection:
     connection.execute("CREATE INDEX IF NOT EXISTS commands_by_source ON commands (source_path)")
     connection.execute("CREATE INDEX IF NOT EXISTS commands_by_kind ON commands (kind)")
     connection.execute("CREATE INDEX IF NOT EXISTS commands_by_occurred ON commands (occurred_at)")
+    connection.commit()
+    return connection
+
+
+def _query_connection(db_path: Path) -> sqlite3.Connection:
+    connection = sqlite3.connect(
+        f"{db_path.resolve().as_uri()}?mode=ro",
+        uri=True,
+        timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000,
+    )
+    connection.row_factory = sqlite3.Row
+    connection.execute(f"PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}")
     return connection
 
 
 def _schema_version(connection: sqlite3.Connection) -> int:
     row = connection.execute("PRAGMA user_version").fetchone()
     return int(row[0])
-
-
-def _bump_schema_if_needed(connection: sqlite3.Connection) -> bool:
-    if _schema_version(connection) >= SCHEMA_VERSION:
-        return False
-    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-    return True
 
 
 def discover_transcripts(layout: Layout) -> list[tuple[AgentName, Path]]:
@@ -964,16 +981,86 @@ def existing_mtimes(connection: sqlite3.Connection) -> dict[str, int]:
     return {row["source_path"]: int(row["mtime_ns"]) for row in rows}
 
 
+def _read_index_state(db_path: Path) -> tuple[str, bool, dict[str, int]]:
+    connection = _query_connection(db_path)
+    try:
+        journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
+        stale_schema = _schema_version(connection) < SCHEMA_VERSION
+        known = {} if stale_schema else existing_mtimes(connection)
+        return journal_mode, stale_schema, known
+    finally:
+        connection.close()
+
+
+def _database_is_locked(error: sqlite3.OperationalError) -> bool:
+    return "locked" in str(error).lower() or "busy" in str(error).lower()
+
+
+def _sleep_before_retry(attempt: int) -> None:
+    delay = 0.025 * (2**attempt) + random.uniform(0, 0.025)
+    time.sleep(delay)
+
+
+def _retry_on_database_lock(operation: Callable[_P, _R]) -> Callable[_P, _R]:
+    @wraps(operation)
+    def wrapped(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        for attempt in range(SQLITE_WRITE_ATTEMPTS):
+            try:
+                return operation(*args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if not _database_is_locked(exc) or attempt == SQLITE_WRITE_ATTEMPTS - 1:
+                    raise
+                _sleep_before_retry(attempt)
+        raise AssertionError("database retry loop exhausted without returning or raising")
+
+    return wrapped
+
+
+@_retry_on_database_lock
+def _initialize_database(db_path: Path) -> None:
+    connect(db_path).close()
+
+
+def _index_state(db_path: Path) -> tuple[bool, dict[str, int]]:
+    if not db_path.is_file():
+        _initialize_database(db_path)
+    try:
+        journal_mode, stale_schema, known = _read_index_state(db_path)
+    except sqlite3.OperationalError:
+        # Another process may have created the file but not finished the schema.
+        _initialize_database(db_path)
+        _journal_mode, stale_schema, known = _read_index_state(db_path)
+        return stale_schema, known
+    if journal_mode != "wal":
+        # Existing indexes created before WAL support are upgraded once.
+        _initialize_database(db_path)
+        _journal_mode, stale_schema, known = _read_index_state(db_path)
+    return stale_schema, known
+
+
+@_retry_on_database_lock
+def _write_records(
+    db_path: Path,
+    records: list[SessionRecord],
+    *,
+    stale_schema: bool,
+) -> None:
+    with closing(connect(db_path)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        for record in records:
+            upsert(connection, record)
+        if stale_schema:
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
 def reindex(
     layout: Layout,
     *,
     cwd: Path | None = None,
     all_projects: bool = False,
 ) -> tuple[int, int]:
-    connection = connect(layout.history_db)
-    stale_schema = _bump_schema_if_needed(connection)
-    known: dict[str, int] = {} if stale_schema else existing_mtimes(connection)
-    indexed = 0
+    stale_schema, known = _index_state(layout.history_db)
+    records: list[SessionRecord] = []
     skipped = 0
     scope = None if all_projects else (cwd or Path.cwd())
     for agent, path in discover_transcripts(layout):
@@ -989,11 +1076,10 @@ def reindex(
         if scope is not None and not belongs_to_project(record, scope):
             skipped += 1
             continue
-        upsert(connection, record)
-        indexed += 1
-    connection.commit()
-    connection.close()
-    return indexed, skipped
+        records.append(record)
+    if records or stale_schema:
+        _write_records(layout.history_db, records, stale_schema=stale_schema)
+    return len(records), skipped
 
 
 def _fts_query(raw: str) -> str:
@@ -1069,7 +1155,7 @@ def search(
     if sort not in SEARCH_SORTS:
         raise ValueError(f"unknown search sort {sort!r}")
     reindex(layout, cwd=cwd, all_projects=all_projects)
-    connection = connect(layout.history_db)
+    connection = _query_connection(layout.history_db)
     sql = f"""
         SELECT
             s.agent,
@@ -1130,7 +1216,7 @@ def list_sessions(
     until: datetime | None = None,
 ) -> list[SearchHit]:
     reindex(layout, cwd=cwd, all_projects=all_projects)
-    connection = connect(layout.history_db)
+    connection = _query_connection(layout.history_db)
     sql = """
         SELECT agent, source_path, project_cwd, git_root, started_at, title, body
         FROM sessions
@@ -1188,7 +1274,7 @@ def list_commands(
     if kind is not None and kind not in COMMAND_KINDS:
         raise ValueError(f"unknown command kind {kind!r}")
     reindex(layout, cwd=cwd, all_projects=all_projects)
-    connection = connect(layout.history_db)
+    connection = _query_connection(layout.history_db)
     sql = """
         SELECT
             c.agent,
