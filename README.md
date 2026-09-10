@@ -1,5 +1,7 @@
 # agentrecall
 
+[![PyPI](https://img.shields.io/pypi/v/agentrecall-cli.svg)](https://pypi.org/project/agentrecall-cli/) [![Python](https://img.shields.io/pypi/pyversions/agentrecall-cli.svg)](https://pypi.org/project/agentrecall-cli/) [![CI](https://github.com/bluearpit/agentrecall/actions/workflows/ci.yml/badge.svg)](https://github.com/bluearpit/agentrecall/actions/workflows/ci.yml)
+
 Agent Recall turns `~/.agents` into a portable home directory for coding agents. Keep skills, global instructions, a **small permission policy**, and searchable project history in one place, then expose each part through the adapter its agent understands.
 
 The name includes “recall,” but transcript search is only one part of the product. The CLI is `agentrecall` (previously `dotagents`). Cursor, Codex, and OpenCode already read `~/.agents`; Claude Code does not, so this CLI links only where a tool cannot see it. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
