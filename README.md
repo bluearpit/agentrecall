@@ -1,8 +1,8 @@
 # agentrecall
 
-Keep skills, global instructions, a **small permission policy**, and searchable project history in one place: `~/.agents`.
+Agent Recall turns `~/.agents` into a portable home directory for coding agents. Keep skills, global instructions, a **small permission policy**, and searchable project history in one place, then expose each part through the adapter its agent understands.
 
-The CLI is `agentrecall` (previously `dotagents`). Cursor, Codex, and OpenCode already read `~/.agents`; Claude Code does not, so this CLI links only where a tool cannot see it. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
+The name includes “recall,” but transcript search is only one part of the product. The CLI is `agentrecall` (previously `dotagents`). Cursor, Codex, and OpenCode already read `~/.agents`; Claude Code does not, so this CLI links only where a tool cannot see it. Permissions are **translated from a small YAML policy**, not copied from each tool's approval history.
 
 ## What syncs
 
@@ -60,12 +60,17 @@ Write commands are **dry-run unless `--apply`**.
 
 ```bash
 agentrecall status
+agentrecall status --verbose    # include every skill and link state
 agentrecall upgrade             # dry-run
 agentrecall upgrade --apply     # install that version from PyPI
 agentrecall skills              # dry-run
 agentrecall skills --apply      # link ~/.agents/skills into Claude Code
 agentrecall skills --apply adopt
-agentrecall instructions --apply
+agentrecall instructions init --apply
+agentrecall instructions link --apply
+agentrecall instructions link --agent codex --apply
+agentrecall instructions show # exact text to paste into Cursor or OpenCode
+agentrecall instructions --apply # legacy combined init + link flow
 agentrecall project --apply     # CLAUDE.md -> @AGENTS.md
 agentrecall history reindex --cwd .
 agentrecall history search "the decision about X" --cwd .
@@ -86,6 +91,8 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
 
 `--link-mode auto|symlink|hardlink` applies to files. Skill folders always symlink.
 
+`instructions init` creates only the canonical file. `instructions link` activates file-based adapters for Claude Code and Codex, optionally for one `--agent`. `instructions show` prints the exact canonical text to paste into Cursor or OpenCode's UI; there are no target-specific transformations.
+
 ## Layout
 
 ```
@@ -94,6 +101,16 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
   skills/<name>/SKILL.md    # user skills
   permissions.yaml          # portable allow/deny policy
   history/index.sqlite      # search index only; not full transcripts
+```
+
+The instruction model is one source of truth with generated or manually synchronized adapters:
+
+```text
+~/.agents/AGENTS.md        source of truth
+├── ~/.claude/CLAUDE.md    symlink or hardlink adapter
+├── ~/.codex/AGENTS.md     symlink or hardlink adapter
+├── Cursor User Rules      paste from `instructions show`
+└── OpenCode instructions  paste from `instructions show`
 ```
 
 | Agent | Skills | Global instructions | Transcripts (search) |
@@ -105,7 +122,9 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
 
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_CONFIG_HOME` are honored.
 
-History is keyed by project directory (and git root when present). Search, list, and commands default to the current project (`--cwd .`). Pass `--cwd /path/to/project` for one other repo, or `--all` for every indexed project. It is **not** stored in the git repo. Do not commit `~/.agents/history/`. Searching chats is not the same as resuming a Claude session inside Cursor.
+History is keyed by project directory (and git root when present). Search, list, and commands default to the current project (`--cwd .`). Pass `--cwd /path/to/project` for one other repo, or `--all` for every indexed project. The index uses SQLite WAL mode and a busy timeout. When transcripts have not changed, searches use read-only connections; changed transcripts are parsed before a short write transaction. This allows parallel searches without turning every read into an index write.
+
+The index is **not** stored in the git repo. Do not commit `~/.agents/history/`. Searching chats is not the same as resuming a Claude session inside Cursor.
 
 The bundled skill `search-project-history` is installed into `~/.agents/skills` on `agentrecall skills --apply`, then linked into Claude Code like any other skill. Agents should run `agentrecall history search "<query>" --cwd .` to triage the current repo (or `--cwd <path>` / `--all` when the question is not about this repo), then `agentrecall history show <source_path> --grep "<term>"` to verify, instead of scraping transcript files themselves.
 

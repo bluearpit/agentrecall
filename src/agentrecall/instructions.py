@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from pathlib import Path
 
 from agentrecall.layout import AgentName, Layout
@@ -40,6 +41,15 @@ Never include the "Generated with an AI coding agent" footer line in PR descript
 Keep PR descriptions tight. A short paragraph of context, a brief bullet list of the actual \
 changes, and a single line of test confirmation is enough.
 """
+LINKABLE_AGENTS = (AgentName.claude, AgentName.codex)
+MISSING_CANONICAL = (
+    "canonical instructions are missing; run `agentrecall instructions init --apply` first"
+)
+
+
+class InstructionTarget(StrEnum):
+    claude = "claude"
+    codex = "codex"
 
 
 def normalize_instructions(text: str) -> str:
@@ -102,11 +112,22 @@ def files_identical_text(path: Path, text: str) -> bool:
     return path.read_text(encoding="utf-8") == text
 
 
-def instruction_link_plan(layout: Layout, mode: LinkMode) -> list[PlanItem]:
+def _canonical_path(layout: Layout) -> Path:
+    if not layout.agents_instructions.is_file():
+        raise FileNotFoundError(MISSING_CANONICAL)
+    return layout.agents_instructions
+
+
+def instruction_link_plan(
+    layout: Layout,
+    mode: LinkMode,
+    *,
+    agents: tuple[AgentName, ...],
+) -> list[PlanItem]:
     src = layout.agents_instructions
     items: list[PlanItem] = []
     canonical_text = src.read_text(encoding="utf-8") if src.is_file() else ""
-    for name in (AgentName.claude, AgentName.codex):
+    for name in agents:
         spec = layout.agent(name)
         if spec.instruction_file is None:
             continue
@@ -132,21 +153,47 @@ def instruction_link_plan(layout: Layout, mode: LinkMode) -> list[PlanItem]:
     return items
 
 
-def sync_instructions(layout: Layout, *, dry_run: bool, mode: LinkMode) -> tuple[list[str], int]:
+def init_instructions(layout: Layout, *, dry_run: bool) -> list[str]:
     text, origin = resolve_canonical_text(layout)
-    lines = [f"canonical source: {origin}", write_canonical(layout, text, dry_run=dry_run)]
+    return [f"canonical source: {origin}", write_canonical(layout, text, dry_run=dry_run)]
+
+
+def link_instructions(
+    layout: Layout,
+    *,
+    dry_run: bool,
+    mode: LinkMode,
+    agents: tuple[AgentName, ...],
+) -> tuple[list[str], int]:
+    _canonical_path(layout)
+    lines: list[str] = []
+    conflicts = 0
+    for item in instruction_link_plan(layout, mode, agents=agents):
+        lines.append(apply_item(item, dry_run=dry_run))
+        if item.op is Op.conflict:
+            conflicts += 1
+    return lines, conflicts
+
+
+def render_instructions(layout: Layout) -> str:
+    return _canonical_path(layout).read_text(encoding="utf-8")
+
+
+def sync_instructions(layout: Layout, *, dry_run: bool, mode: LinkMode) -> tuple[list[str], int]:
+    lines = init_instructions(layout, dry_run=dry_run)
     if dry_run and not layout.agents_instructions.exists():
         # Linking needs the canonical file to exist; report intended links anyway.
-        for name in (AgentName.claude, AgentName.codex):
+        for name in LINKABLE_AGENTS:
             spec = layout.agent(name)
             if spec.instruction_file is None:
                 continue
             lines.append(f"would link {spec.instruction_file} -> {layout.agents_instructions}")
         return lines, 0
 
-    conflicts = 0
-    for item in instruction_link_plan(layout, mode):
-        lines.append(apply_item(item, dry_run=dry_run))
-        if item.op is Op.conflict:
-            conflicts += 1
-    return lines, conflicts
+    link_lines, conflicts = link_instructions(
+        layout,
+        dry_run=dry_run,
+        mode=mode,
+        agents=LINKABLE_AGENTS,
+    )
+    return [*lines, *link_lines], conflicts

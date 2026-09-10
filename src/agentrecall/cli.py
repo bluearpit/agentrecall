@@ -21,8 +21,15 @@ from agentrecall.history import (
     search,
     select_turns,
 )
-from agentrecall.instructions import sync_instructions
-from agentrecall.layout import Layout
+from agentrecall.instructions import (
+    LINKABLE_AGENTS,
+    InstructionTarget,
+    init_instructions,
+    link_instructions,
+    render_instructions,
+    sync_instructions,
+)
+from agentrecall.layout import AgentName, Layout
 from agentrecall.linking import LinkMode
 from agentrecall.permissions import (
     git_toplevel,
@@ -44,14 +51,19 @@ from agentrecall.upgrade import (
 app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
-    help="Sync skills, instructions, permissions, and project history from ~/.agents.",
+    help="Portable agent skills, instructions, permissions, and history in ~/.agents.",
 )
 skills_app = typer.Typer(no_args_is_help=False, help="Link skills from ~/.agents/skills.")
 history_app = typer.Typer(no_args_is_help=True, help="Search local agent transcripts.")
 permissions_app = typer.Typer(no_args_is_help=False, help="Translate a small permission policy.")
+instructions_app = typer.Typer(
+    no_args_is_help=False,
+    help="Create canonical instructions and activate their adapters.",
+)
 app.add_typer(skills_app, name="skills")
 app.add_typer(history_app, name="history")
 app.add_typer(permissions_app, name="permissions")
+app.add_typer(instructions_app, name="instructions")
 
 
 def _layout() -> Layout:
@@ -96,9 +108,14 @@ def main(
 
 
 @app.command("status")
-def status_cmd() -> None:
+def status_cmd(
+    verbose: Annotated[
+        bool,
+        typer.Option("--verbose", "-v", help="Show every skill and its link state."),
+    ] = False,
+) -> None:
     """Show canonical ~/.agents state and per-agent coverage."""
-    _echo_lines(status_lines(_layout()))
+    _echo_lines(status_lines(_layout(), verbose=verbose))
 
 
 @app.command("upgrade")
@@ -175,8 +192,9 @@ def skills_adopt(ctx: typer.Context) -> None:
     _fail_on_conflicts(conflicts)
 
 
-@app.command("instructions")
-def instructions_cmd(
+@instructions_app.callback(invoke_without_command=True)
+def instructions_root(
+    ctx: typer.Context,
     apply: Annotated[
         bool,
         typer.Option("--apply", help="Write files and links. Default is dry-run."),
@@ -187,12 +205,79 @@ def instructions_cmd(
     ] = LinkMode.auto,
 ) -> None:
     """Create ~/.agents/AGENTS.md and link Claude/Codex instruction files to it."""
+    ctx.obj = {"apply": apply, "link_mode": link_mode}
+    if ctx.invoked_subcommand is not None:
+        return
     dry_run = not apply
     if dry_run:
         typer.echo("dry-run (pass --apply to write)")
     lines, conflicts = sync_instructions(_layout(), dry_run=dry_run, mode=link_mode)
     _echo_lines(lines)
     _fail_on_conflicts(conflicts)
+
+
+@instructions_app.command("init")
+def instructions_init(
+    ctx: typer.Context,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Write ~/.agents/AGENTS.md. Default is dry-run."),
+    ] = False,
+) -> None:
+    """Create the canonical AGENTS.md without linking it anywhere."""
+    apply = apply or bool(ctx.obj and ctx.obj.get("apply"))
+    dry_run = not apply
+    if dry_run:
+        typer.echo("dry-run (pass --apply to write)")
+    _echo_lines(init_instructions(_layout(), dry_run=dry_run))
+
+
+@instructions_app.command("link")
+def instructions_link(
+    ctx: typer.Context,
+    agent: Annotated[
+        InstructionTarget | None,
+        typer.Option("--agent", help="Link only claude or codex."),
+    ] = None,
+    apply: Annotated[
+        bool,
+        typer.Option("--apply", help="Write links. Default is dry-run."),
+    ] = False,
+    link_mode: Annotated[
+        LinkMode | None,
+        typer.Option("--link-mode", help="auto (symlink then hardlink), symlink, or hardlink."),
+    ] = None,
+) -> None:
+    """Link canonical instructions into Claude and/or Codex."""
+    apply = apply or bool(ctx.obj and ctx.obj.get("apply"))
+    parent_mode = ctx.obj.get("link_mode") if ctx.obj else None
+    mode = link_mode or parent_mode or LinkMode.auto
+    agents = LINKABLE_AGENTS if agent is None else (AgentName(agent.value),)
+    dry_run = not apply
+    if dry_run:
+        typer.echo("dry-run (pass --apply to write)")
+    try:
+        lines, conflicts = link_instructions(
+            _layout(),
+            dry_run=dry_run,
+            mode=mode,
+            agents=agents,
+        )
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    _echo_lines(lines)
+    _fail_on_conflicts(conflicts)
+
+
+@instructions_app.command("show")
+def instructions_show() -> None:
+    """Print canonical instructions for pasting into an agent's UI."""
+    try:
+        typer.echo(render_instructions(_layout()), nl=False)
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command("project")

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
+import agentrecall.history as history_module
 from agentrecall.cli import app
 from agentrecall.history import (
     _snippet,
@@ -92,6 +96,181 @@ def test_history_search_scoped_to_cwd(home: Path, layout: Layout, tmp_path: Path
     assert all("/other" not in hit.source_path for hit in hits)
     listed = list_sessions(layout, cwd=project, all_projects=False)
     assert listed
+
+
+def test_warm_search_remains_read_only_while_writer_is_active(
+    home: Path, layout: Layout, tmp_path: Path
+) -> None:
+    project = _project(tmp_path)
+    encoded = encode_claude_project(str(project.resolve()))
+    _write_jsonl(
+        home / ".claude" / "projects" / encoded / "sess.jsonl",
+        [
+            {
+                "type": "user",
+                "cwd": str(project.resolve()),
+                "message": {"role": "user", "content": "parallel history search"},
+            }
+        ],
+    )
+    assert search(layout, "parallel", cwd=project)
+
+    writer = connect(layout.history_db)
+    writer.execute("BEGIN IMMEDIATE")
+    try:
+        hits = search(layout, "parallel", cwd=project)
+    finally:
+        writer.rollback()
+        writer.close()
+
+    assert hits
+
+
+def test_parallel_cold_searches_share_index_safely(
+    home: Path, layout: Layout, tmp_path: Path
+) -> None:
+    project = _project(tmp_path)
+    encoded = encode_claude_project(str(project.resolve()))
+    _write_jsonl(
+        home / ".claude" / "projects" / encoded / "sess.jsonl",
+        [
+            {
+                "type": "user",
+                "cwd": str(project.resolve()),
+                "message": {"role": "user", "content": "concurrent sqlite indexing"},
+            }
+        ],
+    )
+
+    def run_search() -> int:
+        return len(search(layout, "concurrent", cwd=project))
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        counts = list(executor.map(lambda _index: run_search(), range(16)))
+
+    assert counts == [1] * 16
+    connection = connect(layout.history_db)
+    assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert connection.execute("PRAGMA busy_timeout").fetchone()[0] >= 5_000
+    connection.close()
+
+
+def test_existing_index_is_upgraded_to_wal(home: Path, layout: Layout, tmp_path: Path) -> None:
+    project = _project(tmp_path)
+    encoded = encode_claude_project(str(project.resolve()))
+    _write_jsonl(
+        home / ".claude" / "projects" / encoded / "sess.jsonl",
+        [
+            {
+                "type": "user",
+                "cwd": str(project.resolve()),
+                "message": {"role": "user", "content": "upgrade sqlite journal"},
+            }
+        ],
+    )
+    reindex(layout, cwd=project)
+    connection = sqlite3.connect(layout.history_db)
+    assert connection.execute("PRAGMA journal_mode = DELETE").fetchone()[0] == "delete"
+    connection.close()
+
+    assert search(layout, "upgrade", cwd=project)
+
+    connection = sqlite3.connect(layout.history_db)
+    assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    connection.close()
+
+
+def test_reindex_retries_a_transient_locked_write(
+    home: Path,
+    layout: Layout,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = _project(tmp_path)
+    encoded = encode_claude_project(str(project.resolve()))
+    source = home / ".claude" / "projects" / encoded / "sess.jsonl"
+    _write_jsonl(
+        source,
+        [
+            {
+                "type": "user",
+                "cwd": str(project.resolve()),
+                "message": {"role": "user", "content": "first version"},
+            }
+        ],
+    )
+    reindex(layout, cwd=project)
+    _write_jsonl(
+        source,
+        [
+            {
+                "type": "user",
+                "cwd": str(project.resolve()),
+                "message": {"role": "user", "content": "second version is longer"},
+            }
+        ],
+    )
+
+    real_connect = history_module.connect
+    calls = 0
+
+    def flaky_connect(db_path: Path) -> sqlite3.Connection:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connect(db_path)
+
+    monkeypatch.setattr(history_module, "connect", flaky_connect)
+    monkeypatch.setattr(history_module.time, "sleep", lambda _delay: None)
+
+    indexed, _skipped = reindex(layout, cwd=project)
+
+    assert indexed == 1
+    assert calls == 2
+    assert search(layout, "second", cwd=project)
+
+
+def test_database_initialization_uses_shared_lock_retry(
+    layout: Layout,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_connect = history_module.connect
+    calls = 0
+
+    def flaky_connect(db_path: Path) -> sqlite3.Connection:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is busy")
+        return real_connect(db_path)
+
+    monkeypatch.setattr(history_module, "connect", flaky_connect)
+    monkeypatch.setattr(history_module.time, "sleep", lambda _delay: None)
+
+    history_module._initialize_database(layout.history_db)
+
+    assert calls == 2
+    assert layout.history_db.is_file()
+
+
+def test_database_lock_retry_does_not_retry_other_operational_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    @history_module._retry_on_database_lock
+    def fail() -> None:
+        nonlocal calls
+        calls += 1
+        raise sqlite3.OperationalError("unable to open database file")
+
+    monkeypatch.setattr(history_module.time, "sleep", lambda _delay: None)
+
+    with pytest.raises(sqlite3.OperationalError, match="unable to open"):
+        fail()
+
+    assert calls == 1
 
 
 def test_classify_command_kind() -> None:

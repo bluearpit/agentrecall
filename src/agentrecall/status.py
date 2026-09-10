@@ -25,12 +25,16 @@ def skill_state(canonical: Path, dest: Path) -> str:
     return "missing"
 
 
-def status_lines(layout: Layout) -> list[str]:
+def status_lines(layout: Layout, *, verbose: bool) -> list[str]:
+    names = skill_dirs(layout.agents_skills)
+    total_skills = len(names)
+    claude = layout.agent(AgentName.claude)
+    claude_linked = sum(is_linked_to(claude.skills_dir / skill.name, skill) for skill in names)
     lines = [
         f"version:   {__version__}",
         f"canonical: {layout.agents_home}",
         f"  AGENTS.md: {_file_state(layout.agents_instructions)}",
-        f"  skills:    {layout.agents_skills} ({len(skill_dirs(layout.agents_skills))} skills)",
+        f"  skills:    {layout.agents_skills} ({total_skills} skills)",
         f"  history:   {layout.history_db} "
         f"({'present' if layout.history_db.exists() else 'missing'})",
         f"  permissions.yaml: {_file_state(layout.permissions_file)}",
@@ -39,19 +43,23 @@ def status_lines(layout: Layout) -> list[str]:
     ]
     for spec in layout.agents():
         installed = "yes" if layout.is_installed(spec) else "no"
-        skills_note = "native" if spec.reads_agents_skills_natively else "needs-link"
+        if spec.reads_agents_skills_natively:
+            skills_note = f"{total_skills} native"
+        else:
+            skills_note = f"{claude_linked}/{total_skills} linked"
         if spec.instruction_file is None:
-            instructions = "user rules in the product UI (not a file)"
+            instructions = "paste with: agentrecall instructions show"
         else:
             instructions = _file_state(spec.instruction_file)
         lines.append(
-            f"  {spec.name.value:<9} installed={installed:<3}  skills={skills_note:<10}  "
+            f"  {spec.name.value:<9} installed={installed:<3}  skills={skills_note:<14}  "
             f"instructions={instructions}"
         )
 
+    if not verbose:
+        return lines
+
     lines.extend(["", "skills:"])
-    claude = layout.agent(AgentName.claude)
-    names = skill_dirs(layout.agents_skills)
     if not names:
         lines.append("  (none in ~/.agents/skills)")
     for skill in names:
