@@ -1,4 +1,4 @@
-"""Check GitHub for a newer agentrecall release. Never install without --apply."""
+"""Check PyPI for a newer agentrecall-cli release. Never install without --apply."""
 
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ from agentrecall.layout import Layout
 
 SKIP_ENV = "AGENTRECALL_SKIP_UPDATE_CHECK"
 CHECK_INTERVAL = timedelta(hours=24)
-RELEASES_URL = "https://api.github.com/repos/bluearpit/agentrecall/releases/latest"
 PACKAGE = "agentrecall-cli"
+PYPI_URL = f"https://pypi.org/pypi/{PACKAGE}/json"
 
 
 def parse_version(raw: str) -> tuple[int, ...]:
@@ -44,11 +44,12 @@ def is_newer(latest: str, current: str) -> bool:
     return left > right
 
 
-def fetch_latest_version(url: str = RELEASES_URL) -> str | None:
+def fetch_latest_version(url: str = PYPI_URL) -> str | None:
+    """Return the newest version PyPI can install, or None when the check fails."""
     request = Request(
         url,
         headers={
-            "Accept": "application/vnd.github+json",
+            "Accept": "application/json",
             "User-Agent": "agentrecall",
         },
     )
@@ -59,18 +60,78 @@ def fetch_latest_version(url: str = RELEASES_URL) -> str | None:
         return None
     if not isinstance(payload, dict):
         return None
-    tag = payload.get("tag_name")
-    if not isinstance(tag, str) or not tag.strip():
+    info = payload.get("info")
+    if not isinstance(info, dict):
+        return None
+    version = info.get("version")
+    if not isinstance(version, str) or not version.strip():
         return None
     try:
-        parse_version(tag)
+        parse_version(version)
     except ValueError:
         return None
-    return tag.lstrip("vV")
+    return version.strip().lstrip("vV")
 
 
 def update_check_file(layout: Layout) -> Path:
+    """Cache lives under history/, the one extra root sandboxed agents are granted."""
+    return layout.history_dir / "update-check.json"
+
+
+def legacy_update_check_file(layout: Layout) -> Path:
     return layout.agents_home / "update-check.json"
+
+
+def _cache_dir_writable(path: Path) -> bool:
+    """Best-effort hint. Some sandboxes report writable and then deny the write."""
+    for candidate in [path.parent, *path.parent.parents]:
+        if candidate.exists():
+            return os.access(candidate, os.W_OK)
+    return False
+
+
+def _read_update_check(path: Path) -> tuple[str | None, datetime | None]:
+    """Return (latest, checked_at) from the cache file; missing or bad fields are None."""
+    if not path.is_file():
+        return None, None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    cached = payload.get("latest")
+    latest = cached if isinstance(cached, str) and cached.strip() else None
+    checked_raw = payload.get("checked_at")
+    if not isinstance(checked_raw, str):
+        return latest, None
+    try:
+        checked = datetime.fromisoformat(checked_raw)
+    except ValueError:
+        return latest, None
+    if checked.tzinfo is None:
+        checked = checked.replace(tzinfo=UTC)
+    return latest, checked
+
+
+def _write_update_check(path: Path, *, latest: str | None, checked_at: datetime) -> bool:
+    """Write the cache. Never raise: a blocked cache must not stop the command."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"latest": latest, "checked_at": checked_at.isoformat()}),
+            encoding="utf-8",
+        )
+    except OSError:
+        return False
+    return True
+
+
+def _remove_legacy_cache(layout: Layout) -> None:
+    try:
+        legacy_update_check_file(layout).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def cached_latest(
@@ -79,34 +140,26 @@ def cached_latest(
     now: datetime | None = None,
     fetch: Callable[[], str | None] | None = None,
 ) -> str | None:
+    """Return the newest known version, fetching at most once per CHECK_INTERVAL.
+
+    A failed fetch still counts as a check, so an offline machine does not retry
+    on every command. The last known version is kept until a fetch succeeds.
+    When the cache cannot be written (read-only home, strict sandbox), skip the
+    network call too and serve whatever an earlier run recorded.
+    """
     moment = datetime.now(tz=UTC) if now is None else now
     path = update_check_file(layout)
-    if path.is_file():
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        cached = payload.get("latest") if isinstance(payload, dict) else None
-        checked_raw = payload.get("checked_at") if isinstance(payload, dict) else None
-        if isinstance(cached, str) and isinstance(checked_raw, str):
-            try:
-                checked = datetime.fromisoformat(checked_raw)
-            except ValueError:
-                checked = None
-            if checked is not None:
-                if checked.tzinfo is None:
-                    checked = checked.replace(tzinfo=UTC)
-                if moment - checked < CHECK_INTERVAL:
-                    return cached
+    cached, checked = _read_update_check(path)
+    if checked is not None and moment - checked < CHECK_INTERVAL:
+        return cached
+    if not _cache_dir_writable(path):
+        return cached
     getter = fetch if fetch is not None else fetch_latest_version
     latest = getter()
     if latest is None:
-        return None
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"latest": latest, "checked_at": moment.isoformat()}),
-        encoding="utf-8",
-    )
+        latest = cached
+    if _write_update_check(path, latest=latest, checked_at=moment):
+        _remove_legacy_cache(layout)
     return latest
 
 
@@ -148,7 +201,7 @@ def upgrade_plan(
     latest: str | None,
 ) -> tuple[list[str], bool]:
     if latest is None:
-        return ["could not check GitHub for a newer release"], True
+        return ["could not check PyPI for a newer release"], True
     if not is_newer(latest, current):
         return [f"already latest ({current})"], False
     return [
