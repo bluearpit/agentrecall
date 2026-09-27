@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-import agentrecall.history as history_module
+import agentrecall.history_store as history_store
 from agentrecall.cli import app
 from agentrecall.history import (
     _snippet,
@@ -211,7 +211,7 @@ def test_reindex_retries_a_transient_locked_write(
         ],
     )
 
-    real_connect = history_module.connect
+    real_connect = history_store.connect
     calls = 0
 
     def flaky_connect(db_path: Path) -> sqlite3.Connection:
@@ -221,8 +221,8 @@ def test_reindex_retries_a_transient_locked_write(
             raise sqlite3.OperationalError("database is locked")
         return real_connect(db_path)
 
-    monkeypatch.setattr(history_module, "connect", flaky_connect)
-    monkeypatch.setattr(history_module.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(history_store, "connect", flaky_connect)
+    monkeypatch.setattr(history_store.time, "sleep", lambda _delay: None)
 
     indexed, _skipped = reindex(layout, cwd=project)
 
@@ -235,7 +235,7 @@ def test_database_initialization_uses_shared_lock_retry(
     layout: Layout,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    real_connect = history_module.connect
+    real_connect = history_store.connect
     calls = 0
 
     def flaky_connect(db_path: Path) -> sqlite3.Connection:
@@ -245,10 +245,10 @@ def test_database_initialization_uses_shared_lock_retry(
             raise sqlite3.OperationalError("database is busy")
         return real_connect(db_path)
 
-    monkeypatch.setattr(history_module, "connect", flaky_connect)
-    monkeypatch.setattr(history_module.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(history_store, "connect", flaky_connect)
+    monkeypatch.setattr(history_store.time, "sleep", lambda _delay: None)
 
-    history_module._initialize_database(layout.history_db)
+    history_store._initialize_database(layout.history_db)
 
     assert calls == 2
     assert layout.history_db.is_file()
@@ -259,13 +259,13 @@ def test_database_lock_retry_does_not_retry_other_operational_errors(
 ) -> None:
     calls = 0
 
-    @history_module._retry_on_database_lock
+    @history_store._retry_on_database_lock
     def fail() -> None:
         nonlocal calls
         calls += 1
         raise sqlite3.OperationalError("unable to open database file")
 
-    monkeypatch.setattr(history_module.time, "sleep", lambda _delay: None)
+    monkeypatch.setattr(history_store.time, "sleep", lambda _delay: None)
 
     with pytest.raises(sqlite3.OperationalError, match="unable to open"):
         fail()

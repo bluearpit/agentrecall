@@ -1,0 +1,21 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: Ruff check
+        entry: uv run --frozen ruff check src tests
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: ruff-format
+        name: Ruff format check
+        entry: uv run --frozen ruff format --check src tests
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: pytest-coverage
+        name: Pytest with branch coverage
+        entry: bash scripts/check-coverage.sh
+        language: system
+        pass_filenames: false
+        always_run: true
