@@ -27,6 +27,17 @@ CI runs the same lint, pytest on 3.11, 3.12, and 3.13, and distribution smoke te
 
 Tests always get a fake `HOME` (autouse fixture). Do not talk to the real home directory.
 
+## History modules
+
+`history.py` is the public query and indexing entry point used by the CLI. The modules below it have one responsibility each:
+
+- `history_models.py` defines session, command, search-hit, and turn records.
+- `history_sources.py` discovers native files and associates sessions with projects.
+- `history_parsing.py` reads Claude, Cursor, Codex, and Pi JSONL and normalizes their content. It does not access SQLite.
+- `history_store.py` owns the SQLite schema, WAL and retry behavior, writes, and query SQL. It does not parse transcripts.
+
+When adding an agent, put its file discovery in `history_sources.py` and its format handling in `history_parsing.py`. Keep the CLI using `history.py` so indexing and queries share the same path.
+
 ## Pull requests
 
 `main` is protected: squash-merge a PR after `ci` passes. Direct pushes and force-pushes are blocked. No extra reviewer is required.
