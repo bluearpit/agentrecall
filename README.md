@@ -51,9 +51,6 @@ From a checkout:
 
 ```bash
 uv tool install -e .
-# or, for development:
-uv sync --group dev
-uv run agentrecall status
 ```
 
 ## Commands
@@ -178,20 +175,9 @@ Not translated: MCP ids (`mcp__plugin_...`), one-off heredoc approvals, `bypassP
 
 See [`examples/permissions.yaml`](examples/permissions.yaml).
 
-## Development
+## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, and how PRs merge.
-
-```bash
-uv sync --group dev
-uv run ruff check src tests
-uv run ruff format --check src tests
-uv run pytest
-```
-
-CI runs the same lint and tests on Python 3.11–3.13, then builds and smoke-tests the wheel and source distribution. The `ci` job is the merge gate: it is green only when every check passes. Tests always set `HOME` to a temporary directory.
-
-A published GitHub release also uploads to PyPI as [`agentrecall-cli`](https://pypi.org/project/agentrecall-cli/). The workflow uses Trusted Publishing (no API token). GitHub environment `pypi`; workflow `publish.yml`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, checks, pull requests, and releases.
 
 ## Related tools
 
