@@ -16,6 +16,8 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     monkeypatch.delenv("CODEX_HOME", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
+    monkeypatch.delenv("PI_CODING_AGENT_SESSION_DIR", raising=False)
     assert Path.home() == home_dir
     assert home_dir.is_relative_to(tmp_path)
     return home_dir

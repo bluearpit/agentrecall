@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from datetime import datetime
 from pathlib import Path
@@ -12,6 +13,7 @@ import typer
 from agentrecall import __version__
 from agentrecall.history import (
     SEARCH_SORTS,
+    SearchHit,
     format_turn,
     list_commands,
     list_sessions,
@@ -73,6 +75,30 @@ def _layout() -> Layout:
 def _echo_lines(lines: list[str]) -> None:
     for line in lines:
         typer.echo(line)
+
+
+def _history_hit_json(hit: SearchHit, *, include_snippet: bool) -> dict[str, object]:
+    item: dict[str, object] = {
+        "agent": hit.agent,
+        "session_id": hit.session_id,
+        "source_path": hit.source_path,
+        "project_cwd": hit.project_cwd,
+        "name": hit.name,
+        "title": hit.title,
+        "started_at": hit.started_at,
+        "updated_at": hit.updated_at,
+        "capabilities": {"searchable": hit.searchable, "resumable": hit.resumable},
+    }
+    if include_snippet:
+        item["snippet"] = hit.snippet
+    return item
+
+
+def _history_format(value: str) -> str:
+    if value not in {"text", "json"}:
+        typer.echo(f"Error: unknown format {value!r}", err=True)
+        raise typer.Exit(code=1)
+    return value
 
 
 def _fail_on_conflicts(conflicts: int) -> None:
@@ -416,7 +442,7 @@ def history_search(
     ] = None,
     agent: Annotated[
         str | None,
-        typer.Option("--agent", help="Limit to claude, cursor, or codex."),
+        typer.Option("--agent", help="Limit to claude, cursor, codex, or pi."),
     ] = None,
     all_projects: Annotated[
         bool,
@@ -427,11 +453,16 @@ def history_search(
         typer.Option("--sort", help="relevance (default) or recent."),
     ] = "relevance",
     limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 20,
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="text (default) or json."),
+    ] = "text",
 ) -> None:
     """Search indexed chats for a project (or every project with --all)."""
     if sort not in SEARCH_SORTS:
         typer.echo(f"Error: unknown sort {sort!r}", err=True)
         raise typer.Exit(code=1)
+    _history_format(output_format)
     hits = search(
         _layout(),
         query,
@@ -441,6 +472,16 @@ def history_search(
         limit=limit,
         sort=sort,
     )
+    if output_format == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "matches": [_history_hit_json(hit, include_snippet=True) for hit in hits],
+                }
+            )
+        )
+        return
     if not hits:
         typer.echo("no matches")
         return
@@ -493,7 +534,7 @@ def history_list(
     ] = None,
     agent: Annotated[
         str | None,
-        typer.Option("--agent", help="Limit to claude, cursor, or codex."),
+        typer.Option("--agent", help="Limit to claude, cursor, codex, or pi."),
     ] = None,
     all_projects: Annotated[
         bool,
@@ -508,9 +549,14 @@ def history_list(
         typer.Option("--until", help="Inclusive end date (YYYY-MM-DD or ISO timestamp)."),
     ] = None,
     limit: Annotated[int, typer.Option("--limit", min=1, max=200)] = 20,
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="text (default) or json."),
+    ] = "text",
 ) -> None:
     """List recent sessions for a project (or every project with --all)."""
     since_at, until_at = _time_bounds(since, until)
+    _history_format(output_format)
     hits = list_sessions(
         _layout(),
         cwd=_optional_cwd(cwd),
@@ -520,11 +566,23 @@ def history_list(
         since=since_at,
         until=until_at,
     )
+    if output_format == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "sessions": [_history_hit_json(hit, include_snippet=False) for hit in hits],
+                }
+            )
+        )
+        return
     if not hits:
         typer.echo("no sessions")
         return
     for hit in hits:
         typer.echo(f"{hit.agent}\t{hit.started_at or '-'}\t{hit.project_cwd or '-'}\t{hit.title}")
+        if hit.agent == AgentName.pi.value:
+            typer.echo(f"  {hit.source_path}")
 
 
 @history_app.command("commands")
@@ -535,7 +593,7 @@ def history_commands(
     ] = None,
     agent: Annotated[
         str | None,
-        typer.Option("--agent", help="Limit to claude, cursor, or codex."),
+        typer.Option("--agent", help="Limit to claude, cursor, codex, or pi."),
     ] = None,
     kind: Annotated[
         str | None,

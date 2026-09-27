@@ -81,6 +81,8 @@ agentrecall history search "the decision about X" --all
 agentrecall history search "the decision about X" --cwd . --sort recent
 agentrecall history show ~/.claude/projects/.../sess.jsonl --grep "the decision"
 agentrecall history list --cwd .
+agentrecall history list --all --agent pi --format json
+agentrecall history search "authentication" --all --format json
 agentrecall history list --cwd . --since 2026-08-01
 agentrecall history commands --cwd .
 agentrecall history commands --cwd . --kind test
@@ -121,13 +123,22 @@ The instruction model is one source of truth with generated or manually synchron
 | Claude Code | `~/.claude/skills` (needs link) | `~/.claude/CLAUDE.md` | `~/.claude/projects/**/*.jsonl` |
 | Cursor | reads `~/.agents/skills` | User Rules in the UI | `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` |
 | Codex | reads `~/.agents/skills` | `~/.codex/AGENTS.md` | `~/.codex/sessions/**/*.jsonl` |
+| Pi | — | — | `~/.pi/agent/sessions/**/*.jsonl` |
 | OpenCode | reads `~/.agents/skills` | — | not indexed |
 
-`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `XDG_CONFIG_HOME` are honored.
+`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `PI_CODING_AGENT_DIR`, and `PI_CODING_AGENT_SESSION_DIR` are honored. Pi session files follow [Pi's documented JSONL format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md). The session header supplies its ID, cwd, and start time; the latest `session_info` entry supplies an optional name. Unnamed sessions use the first user message as the title. Pi bash calls appear in `history commands --agent pi` and `history show`. Pi's native files stay in place.
 
 History is keyed by project directory (and git root when present). Search, list, and commands default to the current project (`--cwd .`). Pass `--cwd /path/to/project` for one other repo, or `--all` for every indexed project. The index uses SQLite WAL mode and a busy timeout. When transcripts have not changed, searches use read-only connections; changed transcripts are parsed before a short write transaction. This allows parallel searches without turning every read into an index write.
 
 The index is **not** stored in the git repo. Do not commit `~/.agents/history/`. Searching chats is not the same as resuming a Claude session inside Cursor.
+
+### Session catalog JSON
+
+`history list --format json` emits one JSON object with `schema_version: 1` and a `sessions` array. `history search --format json` emits the same session fields in a `matches` array, adding a `snippet` to each match. Empty results are empty arrays. Each session has `agent`, `session_id`, `source_path`, `project_cwd`, `name`, `title`, `started_at`, `updated_at`, and `capabilities` (`searchable`, `resumable`). Paths are absolute; timestamps are UTC ISO 8601 strings or `null`; `session_id` and `name` may be `null`. `resumable` is true for Pi sessions with a valid native session ID. Other agents' records are searchable but are not advertised as resumable by this catalog. A client can pass a Pi `source_path` to Pi's `--session` option.
+
+```json
+{"schema_version":1,"sessions":[{"agent":"pi","session_id":"01a0e3e9-cb4c-74bd-b847-a45e4654a82c","source_path":"/home/me/.pi/agent/sessions/--home-me-project--/session.jsonl","project_cwd":"/home/me/project","name":"Auth cache","title":"Auth cache","started_at":"2026-09-27T10:00:00Z","updated_at":"2026-09-27T10:04:00Z","capabilities":{"searchable":true,"resumable":true}}]}
+```
 
 The bundled skill `search-project-history` is installed into `~/.agents/skills` on `agentrecall skills --apply`, then linked into Claude Code like any other skill. Agents should run `agentrecall history search "<query>" --cwd .` to triage the current repo (or `--cwd <path>` / `--all` when the question is not about this repo), then `agentrecall history show <source_path> --grep "<term>"` to verify, instead of scraping transcript files themselves.
 

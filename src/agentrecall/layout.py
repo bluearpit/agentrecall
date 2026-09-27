@@ -13,6 +13,7 @@ class AgentName(StrEnum):
     claude = "claude"
     cursor = "cursor"
     codex = "codex"
+    pi = "pi"
     opencode = "opencode"
 
 
@@ -97,6 +98,16 @@ class Layout:
         return self.home / ".cursor"
 
     @property
+    def pi_agent_dir(self) -> Path:
+        configured = self.env.get("PI_CODING_AGENT_DIR", "").strip()
+        return Path(configured).expanduser() if configured else self.home / ".pi" / "agent"
+
+    @property
+    def pi_sessions_dir(self) -> Path:
+        configured = self.env.get("PI_CODING_AGENT_SESSION_DIR", "").strip()
+        return Path(configured).expanduser() if configured else self.pi_agent_dir / "sessions"
+
+    @property
     def opencode_home(self) -> Path:
         return self.xdg_config_home / "opencode"
 
@@ -140,6 +151,19 @@ class Layout:
                 transcripts_glob="sessions/**/*.jsonl",
                 detect_path=home,
             )
+        if name is AgentName.pi:
+            home = self.pi_agent_dir
+            return AgentSpec(
+                name=name,
+                display_name="Pi",
+                home=home,
+                skills_dir=home / "skills",
+                reads_agents_skills_natively=False,
+                instruction_file=None,
+                instruction_kind=None,
+                transcripts_glob="sessions/**/*.jsonl",
+                detect_path=home,
+            )
         home = self.opencode_home
         return AgentSpec(
             name=name,
@@ -154,7 +178,15 @@ class Layout:
         )
 
     def agents(self) -> tuple[AgentSpec, ...]:
-        return tuple(self.agent(name) for name in AgentName)
+        return tuple(
+            self.agent(name)
+            for name in (
+                AgentName.claude,
+                AgentName.cursor,
+                AgentName.codex,
+                AgentName.opencode,
+            )
+        )
 
     def is_installed(self, spec: AgentSpec) -> bool:
         return spec.detect_path.exists()

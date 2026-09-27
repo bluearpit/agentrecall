@@ -15,6 +15,7 @@ from functools import wraps
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
+from agentrecall.history_pi import iter_pi_events, pi_message_text, pi_shell_commands
 from agentrecall.layout import AgentName, Layout
 
 MAX_BODY_CHARS = 200_000
@@ -23,7 +24,7 @@ MAX_COMMANDS_PER_SESSION = 1_000
 MAX_TURN_CHARS = 8_000
 SNIPPET_RADIUS = 80
 SNIPPET_TOKENS = 24
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 COMMAND_KINDS = ("test", "http", "git", "python", "docker", "other")
 SEARCH_SORTS = ("relevance", "recent")
 SQLITE_BUSY_TIMEOUT_MS = 5_000
@@ -87,6 +88,11 @@ class SessionRecord:
     title: str
     body: str
     commands: tuple[CommandRecord, ...]
+    session_id: str | None = None
+    name: str | None = None
+    updated_at: str | None = None
+    searchable: bool = True
+    resumable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +103,11 @@ class SearchHit:
     started_at: str | None
     title: str
     snippet: str
+    session_id: str | None = None
+    name: str | None = None
+    updated_at: str | None = None
+    searchable: bool = True
+    resumable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,10 +236,27 @@ def connect(db_path: Path) -> sqlite3.Connection:
             git_root TEXT,
             started_at TEXT,
             title TEXT NOT NULL,
-            body TEXT NOT NULL
+            body TEXT NOT NULL,
+            session_id TEXT,
+            name TEXT,
+            updated_at TEXT,
+            searchable INTEGER NOT NULL DEFAULT 1,
+            resumable INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    connection.execute("BEGIN IMMEDIATE")
+    columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
+    for name, definition in (
+        ("session_id", "TEXT"),
+        ("name", "TEXT"),
+        ("updated_at", "TEXT"),
+        ("searchable", "INTEGER NOT NULL DEFAULT 1"),
+        ("resumable", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if name not in columns:
+            connection.execute(f"ALTER TABLE sessions ADD COLUMN {name} {definition}")
+    connection.commit()
     connection.execute(
         """
         CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
@@ -300,6 +328,9 @@ def discover_transcripts(layout: Layout) -> list[tuple[AgentName, Path]]:
     if archived.is_dir():
         for path in archived.glob("**/*.jsonl"):
             found.append((AgentName.codex, path))
+    if layout.pi_sessions_dir.is_dir():
+        for path in layout.pi_sessions_dir.glob("**/*.jsonl"):
+            found.append((AgentName.pi, path))
     return found
 
 
@@ -569,6 +600,8 @@ def _dedupe_commands(commands: list[CommandRecord]) -> list[CommandRecord]:
 
 
 def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
+    if agent is AgentName.pi:
+        return _parse_pi_transcript(path)
     texts: list[str] = []
     extracted: list[CommandRecord] = []
     project_cwd: str | None = None
@@ -648,6 +681,89 @@ def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
         title=_first_user_title(texts),
         body=body,
         commands=commands,
+        updated_at=_normalize_timestamp(last_timestamp) or started_at,
+    )
+
+
+def _parse_pi_transcript(path: Path) -> SessionRecord:
+    session_id: str | None = None
+    project_cwd: str | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
+    name: str | None = None
+    first_user_text: str | None = None
+    texts: list[str] = []
+    extracted: list[CommandRecord] = []
+    text_length = 0
+    try:
+        for event in iter_pi_events(path):
+            event_type = event.get("type")
+            timestamp = event.get("timestamp")
+            if isinstance(timestamp, str) and timestamp.strip():
+                updated_at = _normalize_timestamp(timestamp)
+            if event_type == "session" and started_at is None:
+                raw_id = event.get("id")
+                if isinstance(raw_id, str) and raw_id.strip():
+                    session_id = raw_id.strip()
+                raw_cwd = event.get("cwd")
+                if isinstance(raw_cwd, str) and Path(raw_cwd).is_absolute():
+                    project_cwd = raw_cwd
+                started_at = updated_at
+            elif event_type == "session_info":
+                raw_name = event.get("name")
+                name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
+            for tool, command in pi_shell_commands(event):
+                record = _parsed_command(
+                    occurred_at=updated_at,
+                    tool=tool,
+                    command=command,
+                    purpose=None,
+                )
+                if record is not None:
+                    extracted.append(record)
+            message = pi_message_text(event)
+            if message is None:
+                continue
+            role, message_text = message
+            if role == "user" and first_user_text is None:
+                first_user_text = message_text
+            if text_length < MAX_BODY_CHARS:
+                clipped = message_text[: MAX_BODY_CHARS - text_length]
+                texts.append(clipped)
+                text_length += len(clipped)
+    except OSError:
+        pass
+
+    stat = path.stat()
+    fallback_time = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
+    started_at = started_at or _normalize_timestamp(fallback_time)
+    updated_at = updated_at or _normalize_timestamp(fallback_time)
+    git_root = git_toplevel(Path(project_cwd)) if project_cwd is not None else None
+    return SessionRecord(
+        agent=AgentName.pi.value,
+        source_path=str(path),
+        mtime_ns=stat.st_mtime_ns,
+        project_cwd=project_cwd,
+        git_root=str(git_root) if git_root is not None else None,
+        started_at=started_at,
+        title=name or _first_user_title([first_user_text] if first_user_text else []),
+        body="\n".join(texts)[:MAX_BODY_CHARS],
+        commands=tuple(
+            CommandRecord(
+                agent=AgentName.pi.value,
+                source_path=str(path),
+                occurred_at=item.occurred_at or started_at,
+                tool=item.tool,
+                command=item.command,
+                purpose=item.purpose,
+                kind=item.kind,
+            )
+            for item in _dedupe_commands(extracted)
+        ),
+        session_id=session_id,
+        name=name,
+        updated_at=updated_at,
+        resumable=session_id is not None,
     )
 
 
@@ -694,6 +810,8 @@ def agent_from_source_path(path: Path) -> AgentName | None:
         return AgentName.claude
     if "/.codex/" in posix or posix.startswith(".codex/"):
         return AgentName.codex
+    if "/.pi/agent/sessions/" in posix or posix.startswith(".pi/agent/sessions/"):
+        return AgentName.pi
     return None
 
 
@@ -771,6 +889,8 @@ def _texts_from_payload(agent: AgentName, payload: dict[str, object]) -> list[st
 
 
 def iter_transcript_turns(agent: AgentName, path: Path) -> list[Turn]:
+    if agent is AgentName.pi:
+        return _pi_transcript_turns(path)
     turns: list[Turn] = []
     last_timestamp: str | None = None
     try:
@@ -795,6 +915,22 @@ def iter_transcript_turns(agent: AgentName, path: Path) -> list[Turn]:
                     turns.append(Turn(role=role, text="\n".join(texts), occurred_at=occurred))
                 for command in _extract_commands(agent, payload, occurred_at=occurred):
                     turns.append(Turn(role="command", text=command.command, occurred_at=occurred))
+    except OSError:
+        return []
+    return turns
+
+
+def _pi_transcript_turns(path: Path) -> list[Turn]:
+    turns: list[Turn] = []
+    try:
+        for event in iter_pi_events(path):
+            message = pi_message_text(event)
+            timestamp = event.get("timestamp")
+            occurred_at = _normalize_timestamp(timestamp) if isinstance(timestamp, str) else None
+            if message is not None:
+                turns.append(Turn(role=message[0], text=message[1], occurred_at=occurred_at))
+            for _tool, command in pi_shell_commands(event):
+                turns.append(Turn(role="command", text=command, occurred_at=occurred_at))
     except OSError:
         return []
     return turns
@@ -836,6 +972,10 @@ def load_turns(path: Path) -> list[Turn]:
     if not path.is_file():
         raise FileNotFoundError(f"transcript not found: {path}")
     agent = agent_from_source_path(path)
+    if agent is None and path.resolve().is_relative_to(
+        Layout.from_environ().pi_sessions_dir.resolve()
+    ):
+        agent = AgentName.pi
     if agent is None:
         raise ValueError(f"cannot detect agent from path {path}")
     return iter_transcript_turns(agent, path)
@@ -917,6 +1057,11 @@ def _session_from_row(row: sqlite3.Row) -> SessionRecord:
         title=row["title"] if "title" in row.keys() else "",
         body=row["body"] if "body" in row.keys() else "",
         commands=(),
+        session_id=row["session_id"] if "session_id" in row.keys() else None,
+        name=row["name"] if "name" in row.keys() else None,
+        updated_at=row["updated_at"] if "updated_at" in row.keys() else None,
+        searchable=bool(row["searchable"]) if "searchable" in row.keys() else True,
+        resumable=bool(row["resumable"]) if "resumable" in row.keys() else False,
     )
 
 
@@ -924,8 +1069,9 @@ def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
     connection.execute(
         """
         INSERT INTO sessions (
-            source_path, agent, mtime_ns, project_cwd, git_root, started_at, title, body
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            source_path, agent, mtime_ns, project_cwd, git_root, started_at, title, body,
+            session_id, name, updated_at, searchable, resumable
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_path) DO UPDATE SET
             agent = excluded.agent,
             mtime_ns = excluded.mtime_ns,
@@ -933,7 +1079,12 @@ def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
             git_root = excluded.git_root,
             started_at = excluded.started_at,
             title = excluded.title,
-            body = excluded.body
+            body = excluded.body,
+            session_id = excluded.session_id,
+            name = excluded.name,
+            updated_at = excluded.updated_at,
+            searchable = excluded.searchable,
+            resumable = excluded.resumable
         """,
         (
             record.source_path,
@@ -944,6 +1095,11 @@ def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
             record.started_at,
             record.title,
             record.body,
+            record.session_id,
+            record.name,
+            record.updated_at,
+            int(record.searchable),
+            int(record.resumable),
         ),
     )
     connection.execute("DELETE FROM sessions_fts WHERE source_path = ?", (record.source_path,))
@@ -1158,13 +1314,7 @@ def search(
     connection = _query_connection(layout.history_db)
     sql = f"""
         SELECT
-            s.agent,
-            s.source_path,
-            s.project_cwd,
-            s.git_root,
-            s.started_at,
-            s.title,
-            s.body,
+            s.*,
             bm25(sessions_fts) AS rank,
             snippet(sessions_fts, 2, '', '', '...', {SNIPPET_TOKENS}) AS fts_snippet
         FROM sessions_fts
@@ -1198,6 +1348,11 @@ def search(
                 started_at=row["started_at"],
                 title=row["title"],
                 snippet=snippet,
+                session_id=row["session_id"],
+                name=row["name"],
+                updated_at=row["updated_at"],
+                searchable=bool(row["searchable"]),
+                resumable=bool(row["resumable"]),
             )
         )
         if len(hits) >= limit:
@@ -1218,7 +1373,7 @@ def list_sessions(
     reindex(layout, cwd=cwd, all_projects=all_projects)
     connection = _query_connection(layout.history_db)
     sql = """
-        SELECT agent, source_path, project_cwd, git_root, started_at, title, body
+        SELECT *
         FROM sessions
         WHERE 1 = 1
     """
@@ -1253,6 +1408,11 @@ def list_sessions(
                 started_at=row["started_at"],
                 title=row["title"],
                 snippet=re.sub(r"\s+", " ", row["body"]).strip()[: SNIPPET_RADIUS * 2],
+                session_id=row["session_id"],
+                name=row["name"],
+                updated_at=row["updated_at"],
+                searchable=bool(row["searchable"]),
+                resumable=bool(row["resumable"]),
             )
         )
         if len(hits) >= limit:
