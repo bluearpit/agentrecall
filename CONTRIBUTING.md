@@ -6,6 +6,7 @@ The CLI is `agentrecall`. The PyPI package is `agentrecall-cli`. Source lives un
 
 ```bash
 uv sync --group dev
+uv run pre-commit install
 uv run agentrecall status
 ```
 
@@ -16,14 +17,15 @@ Python 3.11+. `uv` on `PATH`.
 ```bash
 uv run ruff check src tests
 uv run ruff format --check src tests
-uv run pytest
+bash scripts/check-coverage.sh
+uv run pre-commit run --all-files
 package_version="$(uv version --short)"
 uv build --no-sources
 uv run --isolated --no-project --with "dist/agentrecall_cli-${package_version}-py3-none-any.whl" tests/smoke_test.py
 uv run --isolated --no-project --with "dist/agentrecall_cli-${package_version}.tar.gz" tests/smoke_test.py
 ```
 
-CI runs the same lint, pytest on 3.11, 3.12, and 3.13, and distribution smoke tests. The `ci` job must be green before merge.
+The pre-commit hook runs Ruff and the full pytest suite with branch coverage of at least 80%. CI runs the same coverage gate on 3.11, 3.12, and 3.13, plus lint and distribution smoke tests. The `ci` job must be green before merge, even if a local hook is skipped. Coverage measures executed code; it cannot prove a specific behavior is asserted. Add a regression test for every bug fix that fails before the fix and passes after it.
 
 Tests always get a fake `HOME` (autouse fixture). Do not talk to the real home directory.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -187,6 +188,131 @@ def test_pi_malformed_entries_and_custom_session_directory(
     shown = CliRunner().invoke(app, ["history", "show", str(source)])
     assert shown.exit_code == 0, shown.output
     assert "Recover partial session" in shown.stdout
+
+
+def test_deleted_pi_session_is_removed_from_catalog_search_and_commands(
+    layout: Layout, tmp_path: Path
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    source = layout.pi_sessions_dir / "deleted.jsonl"
+    _write_pi_session(
+        source,
+        [
+            {"type": "session", "id": "deleted-id", "cwd": str(project)},
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "orphaned session"},
+                        {
+                            "type": "toolCall",
+                            "name": "bash",
+                            "arguments": {"command": "git status"},
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+    assert list_sessions(layout, all_projects=True, agent="pi")[0].resumable is True
+    assert search(layout, "orphaned", all_projects=True, agent="pi")
+    assert list_commands(layout, all_projects=True, agent="pi")
+
+    source.unlink()
+
+    assert list_sessions(layout, all_projects=True, agent="pi") == []
+    assert search(layout, "orphaned", all_projects=True, agent="pi") == []
+    assert list_commands(layout, all_projects=True, agent="pi") == []
+    with sqlite3.connect(layout.history_db) as connection:
+        for table in ("sessions", "sessions_fts", "commands"):
+            count = connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE source_path = ?", (str(source),)
+            ).fetchone()[0]
+            assert count == 0
+
+
+def test_recent_pi_sessions_use_last_activity_before_limit(layout: Layout, tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    active = layout.pi_sessions_dir / "active.jsonl"
+    idle = layout.pi_sessions_dir / "idle.jsonl"
+    _write_pi_session(
+        active,
+        [
+            {
+                "type": "session",
+                "id": "active-id",
+                "cwd": str(project),
+                "timestamp": "2026-09-01T00:00:00Z",
+            },
+            {
+                "type": "message",
+                "timestamp": "2026-09-27T00:00:00Z",
+                "message": {"role": "user", "content": "session activity"},
+            },
+        ],
+    )
+    _write_pi_session(
+        idle,
+        [
+            {
+                "type": "session",
+                "id": "idle-id",
+                "cwd": str(project),
+                "timestamp": "2026-09-20T00:00:00Z",
+            },
+            {"type": "message", "message": {"role": "user", "content": "session activity"}},
+        ],
+    )
+    reindex(layout, all_projects=True)
+    with sqlite3.connect(layout.history_db) as connection:
+        connection.execute(
+            "UPDATE sessions SET updated_at = NULL WHERE source_path = ?", (str(idle),)
+        )
+
+    assert [
+        hit.source_path for hit in list_sessions(layout, all_projects=True, agent="pi", limit=1)
+    ] == [str(active)]
+    since = datetime(2026, 9, 25, tzinfo=UTC)
+    assert [
+        hit.source_path for hit in list_sessions(layout, all_projects=True, agent="pi", since=since)
+    ] == [str(active)]
+    assert [
+        hit.source_path
+        for hit in search(layout, "activity", all_projects=True, agent="pi", sort="recent", limit=1)
+    ] == [str(active)]
+
+
+def test_pi_session_without_cwd_is_not_advertised_as_resumable(
+    layout: Layout,
+) -> None:
+    source = layout.pi_sessions_dir / "missing-cwd.jsonl"
+    _write_pi_session(
+        source,
+        [
+            {"type": "session", "id": "has-id", "timestamp": "2026-09-27T00:00:00Z"},
+            {"type": "message", "message": {"role": "user", "content": "missing project cwd"}},
+        ],
+    )
+    hit = list_sessions(layout, all_projects=True, agent="pi")[0]
+    assert hit.session_id == "has-id"
+    assert hit.project_cwd is None
+    assert hit.resumable is False
+
+    # An index written by the previous version may still have the old flag.
+    with sqlite3.connect(layout.history_db) as connection:
+        connection.execute(
+            "UPDATE sessions SET resumable = 1 WHERE source_path = ?", (str(source),)
+        )
+    listed = CliRunner().invoke(
+        app, ["history", "list", "--all", "--agent", "pi", "--format", "json"]
+    )
+    assert listed.exit_code == 0, listed.output
+    entry = json.loads(listed.stdout)["sessions"][0]
+    assert entry["project_cwd"] is None
+    assert entry["capabilities"]["resumable"] is False
 
 
 def test_pi_agent_directory_override(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:

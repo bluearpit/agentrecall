@@ -50,7 +50,7 @@ jobs:
       - name: Test
         run: |
           uv sync --group dev --frozen
-          uv run pytest
+          bash scripts/check-coverage.sh
 
   package:
     runs-on: ubuntu-latest
