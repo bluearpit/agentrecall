@@ -123,7 +123,11 @@ def _session_from_row(row: sqlite3.Row) -> SessionRecord:
         name=row["name"] if "name" in row.keys() else None,
         updated_at=row["updated_at"] if "updated_at" in row.keys() else None,
         searchable=bool(row["searchable"]) if "searchable" in row.keys() else True,
-        resumable=bool(row["resumable"]) if "resumable" in row.keys() else False,
+        resumable=(
+            bool(row["resumable"] and row["session_id"] and row["project_cwd"])
+            if "resumable" in row.keys()
+            else False
+        ),
     )
 
 
@@ -204,7 +208,7 @@ def _read_index_state(db_path: Path) -> tuple[str, bool, dict[str, int]]:
     try:
         journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0])
         stale_schema = _schema_version(connection) < SCHEMA_VERSION
-        known = {} if stale_schema else existing_mtimes(connection)
+        known = existing_mtimes(connection)
         return journal_mode, stale_schema, known
     finally:
         connection.close()
@@ -261,10 +265,16 @@ def _write_records(
     db_path: Path,
     records: list[SessionRecord],
     *,
+    deleted_paths: set[str],
     stale_schema: bool,
 ) -> None:
     with closing(connect(db_path)) as connection, connection:
         connection.execute("BEGIN IMMEDIATE")
+        for table in ("commands", "sessions_fts", "sessions"):
+            connection.executemany(
+                f"DELETE FROM {table} WHERE source_path = ?",
+                ((source,) for source in deleted_paths),
+            )
         for record in records:
             upsert(connection, record)
         if stale_schema:
@@ -290,6 +300,11 @@ def _append_time_bounds(
         sql += f" AND {column} <= ?"
         params.append(_stamp(until))
     return sql
+
+
+def _session_activity_sql(table_alias: str = "") -> str:
+    prefix = f"{table_alias}." if table_alias else ""
+    return f"COALESCE(NULLIF({prefix}updated_at, ''), {prefix}started_at)"
 
 
 def _fts_query(raw: str) -> str:
@@ -326,9 +341,9 @@ def search_candidates(
         sql += " AND s.agent = ?"
         params.append(agent)
     if sort == "recent":
-        sql += " ORDER BY s.started_at DESC LIMIT ?"
+        sql += f" ORDER BY {_session_activity_sql('s')} DESC LIMIT ?"
     else:
-        sql += " ORDER BY rank ASC, s.started_at DESC LIMIT ?"
+        sql += f" ORDER BY rank ASC, {_session_activity_sql('s')} DESC LIMIT ?"
     params.append(limit)
     with closing(_query_connection(db_path)) as connection:
         return [
@@ -350,8 +365,9 @@ def list_stored_sessions(
     if agent is not None:
         sql += " AND agent = ?"
         params.append(agent)
-    sql = _append_time_bounds(sql, params, column="started_at", since=since, until=until)
-    sql += " ORDER BY started_at DESC LIMIT ?"
+    activity = _session_activity_sql()
+    sql = _append_time_bounds(sql, params, column=activity, since=since, until=until)
+    sql += f" ORDER BY {activity} DESC LIMIT ?"
     params.append(limit)
     with closing(_query_connection(db_path)) as connection:
         return [_session_from_row(row) for row in connection.execute(sql, params)]

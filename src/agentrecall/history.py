@@ -122,6 +122,7 @@ def reindex(
 ) -> tuple[int, int]:
     stale_schema, known = _index_state(layout.history_db)
     records: list[SessionRecord] = []
+    observed: set[str] = set()
     skipped = 0
     scope = None if all_projects else (cwd or Path.cwd())
     for agent, path in discover_transcripts(layout):
@@ -130,16 +131,27 @@ def reindex(
             mtime_ns = path.stat().st_mtime_ns
         except OSError:
             continue
-        if known.get(source) == mtime_ns:
+        observed.add(source)
+        if not stale_schema and known.get(source) == mtime_ns:
             skipped += 1
             continue
-        record = parse_transcript(agent, path)
+        try:
+            record = parse_transcript(agent, path)
+        except OSError:
+            observed.discard(source)
+            continue
         if scope is not None and not belongs_to_project(record, scope):
             skipped += 1
             continue
         records.append(record)
-    if records or stale_schema:
-        _write_records(layout.history_db, records, stale_schema=stale_schema)
+    deleted_paths = known.keys() - observed
+    if records or deleted_paths or stale_schema:
+        _write_records(
+            layout.history_db,
+            records,
+            deleted_paths=deleted_paths,
+            stale_schema=stale_schema,
+        )
     return len(records), skipped
 
 
@@ -260,7 +272,7 @@ def list_sessions(
     for record in records:
         if scope is not None and not belongs_to_project(record, scope):
             continue
-        if not _in_time_range(record.started_at, since=since, until=until):
+        if not _in_time_range(record.updated_at or record.started_at, since=since, until=until):
             continue
         snippet = re.sub(r"\s+", " ", record.body).strip()[: SNIPPET_RADIUS * 2]
         hits.append(_hit_from_record(record, snippet=snippet))

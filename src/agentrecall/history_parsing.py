@@ -521,7 +521,7 @@ def _parse_pi_transcript(path: Path) -> SessionRecord:
         session_id=session_id,
         name=name,
         updated_at=updated_at,
-        resumable=session_id is not None,
+        resumable=session_id is not None and project_cwd is not None,
     )
 
 
