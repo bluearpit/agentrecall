@@ -79,6 +79,112 @@ def git_toplevel(cwd: Path) -> Path | None:
     return None
 
 
+def _read_pointer_file(path: Path, prefix: str) -> Path | None:
+    """Read a one-line git pointer file such as ``gitdir: <path>``."""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if prefix:
+        if not text.startswith(prefix):
+            return None
+        text = text[len(prefix) :].strip()
+    if not text:
+        return None
+    target = Path(text)
+    if not target.is_absolute():
+        target = path.parent / target
+    return target
+
+
+def git_dir(toplevel: Path) -> Path | None:
+    """Return the git directory for a checkout: ``.git`` or the linked worktree's gitdir."""
+    entry = toplevel / ".git"
+    if entry.is_dir():
+        return entry
+    if entry.is_file():
+        target = _read_pointer_file(entry, "gitdir:")
+        if target is not None and target.is_dir():
+            return target.resolve()
+    return None
+
+
+def is_linked_worktree(toplevel: Path) -> bool:
+    return (toplevel / ".git").is_file()
+
+
+def git_repo_root(toplevel: Path) -> Path | None:
+    """Return the main checkout shared by every worktree of ``toplevel``.
+
+    A plain checkout is its own repo root. A linked worktree keeps a ``.git``
+    file pointing at ``<repo>/.git/worktrees/<name>``; that directory's
+    ``commondir`` file leads back to the shared ``<repo>/.git``. No git
+    subprocess is needed. Returns None when the pointer cannot be followed.
+    """
+    directory = git_dir(toplevel)
+    if directory is None:
+        return None
+    if not is_linked_worktree(toplevel):
+        return toplevel
+    common = _read_pointer_file(directory / "commondir", "")
+    if common is not None and common.is_dir():
+        common = common.resolve()
+    elif directory.parent.name == "worktrees" and directory.parent.parent.name == ".git":
+        common = directory.parent.parent
+    else:
+        return None
+    return common.parent if common.name == ".git" else common
+
+
+def git_head_branch(toplevel: Path) -> str | None:
+    """Return the branch named in HEAD, or None for a detached or unreadable HEAD."""
+    directory = git_dir(toplevel)
+    if directory is None:
+        return None
+    try:
+        head = (directory / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    prefix = "ref: refs/heads/"
+    if head.startswith(prefix) and len(head) > len(prefix):
+        return head[len(prefix) :]
+    return None
+
+
+def describe_checkout(project_cwd: str | None) -> tuple[str | None, str | None, str | None]:
+    """Return ``(git_root, repo_root, branch)`` for a session's project directory.
+
+    ``branch`` is read from HEAD only for a linked worktree, where it is stable
+    by construction. The main checkout switches branches too often for the
+    current HEAD to describe an old session, so it stays None there and the
+    transcript's own branch metadata is used instead when present.
+    """
+    if project_cwd is None:
+        return None, None, None
+    toplevel = git_toplevel(Path(project_cwd))
+    if toplevel is None:
+        return None, None, None
+    repo_root = git_repo_root(toplevel)
+    branch = git_head_branch(toplevel) if is_linked_worktree(toplevel) else None
+    return str(toplevel), None if repo_root is None else str(repo_root), branch
+
+
+def registered_worktrees(repo_root: Path) -> list[Path]:
+    """List linked worktree checkouts registered under ``<repo_root>/.git/worktrees``."""
+    worktrees_dir = repo_root / ".git" / "worktrees"
+    if not worktrees_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for entry in sorted(worktrees_dir.iterdir()):
+        pointer = _read_pointer_file(entry / "gitdir", "")
+        if pointer is None:
+            continue
+        checkout = pointer.parent if pointer.name == ".git" else pointer
+        if checkout.is_dir():
+            found.append(checkout.resolve())
+    return found
+
+
 def discover_transcripts(layout: Layout) -> list[tuple[AgentName, Path]]:
     found: list[tuple[AgentName, Path]] = []
     claude = layout.agent(AgentName.claude)
@@ -151,27 +257,39 @@ def infer_cwd_from_source_path(
     return None
 
 
-def project_match_keys(cwd: Path) -> set[str]:
+def _add_path_keys(keys: set[str], path: Path) -> None:
+    keys.add(str(path))
+    keys.add(encode_claude_project(str(path)))
+    keys.add(encode_cursor_project(str(path)))
+
+
+def project_match_keys(cwd: Path, *, this_worktree: bool = False) -> set[str]:
+    """Keys that identify ``cwd``'s project.
+
+    By default the keys cover the whole repository, so a query from any
+    worktree matches sessions recorded in every other worktree of the same
+    repo. ``this_worktree`` narrows the keys to the checkout that contains
+    ``cwd``.
+    """
     resolved = cwd.resolve()
-    keys = {
-        str(resolved),
-        str(cwd),
-        encode_claude_project(str(resolved)),
-        encode_cursor_project(str(resolved)),
-    }
+    keys = {str(resolved), str(cwd)}
+    _add_path_keys(keys, resolved)
     toplevel = git_toplevel(resolved)
     if toplevel is not None:
-        keys.add(str(toplevel))
-        keys.add(encode_claude_project(str(toplevel)))
-        keys.add(encode_cursor_project(str(toplevel)))
+        _add_path_keys(keys, toplevel)
+        repo_root = None if this_worktree else git_repo_root(toplevel)
+        if repo_root is not None:
+            _add_path_keys(keys, repo_root)
     return {key for key in keys if key}
 
 
-def belongs_to_project(record: SessionRecord, cwd: Path) -> bool:
-    keys = project_match_keys(cwd)
+def belongs_to_project(record: SessionRecord, cwd: Path, *, this_worktree: bool = False) -> bool:
+    keys = project_match_keys(cwd, this_worktree=this_worktree)
     if record.project_cwd is not None and record.project_cwd in keys:
         return True
     if record.git_root is not None and record.git_root in keys:
+        return True
+    if not this_worktree and record.repo_root is not None and record.repo_root in keys:
         return True
     source = record.source_path.replace("\\", "/")
     padded = f"/{source}/"

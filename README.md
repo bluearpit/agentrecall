@@ -81,6 +81,9 @@ agentrecall history list --cwd .
 agentrecall history list --all --agent pi --format json
 agentrecall history search "authentication" --all --format json
 agentrecall history list --cwd . --since 2026-08-01
+agentrecall history worktrees --cwd .
+agentrecall history list --cwd . --branch "feature/dat2-622*"
+agentrecall history search "field updates" --cwd . --this-worktree
 agentrecall history commands --cwd .
 agentrecall history commands --cwd . --kind test
 agentrecall permissions init --apply
@@ -127,11 +130,13 @@ The instruction model is one source of truth with generated or manually synchron
 
 History is keyed by project directory (and git root when present). Search, list, and commands default to the current project (`--cwd .`). Pass `--cwd /path/to/project` for one other repo, or `--all` for every indexed project. The index uses SQLite WAL mode and a busy timeout. When transcripts have not changed, searches use read-only connections; changed transcripts are parsed before a short write transaction. This allows parallel searches without turning every read into an index write.
 
+`--cwd` identifies the whole repository, not one checkout. A linked git worktree keeps a `.git` file pointing back into the main checkout, and the index follows that pointer (pure pathlib, no git subprocess) to store a shared `repo_root` next to each session's `git_root`. So a query from `~/repos/app` also returns chats that happened in `~/repos/app-feature-x`, and the text output names the checkout and branch (`app-feature-x@feature/x`) instead of a long path. `--this-worktree` narrows back to the current checkout. `--branch` accepts a name or a `*`/`?` glob. Claude Code and Codex write the branch into their transcripts; Cursor and Pi do not, so their chats carry a branch only when they ran inside a linked worktree, whose HEAD is stable. `history worktrees --cwd .` prints one row per worktree with its branch, indexed chats per agent, and last activity, including worktrees with no chats yet.
+
 The index is **not** stored in the git repo. Do not commit `~/.agents/history/`. Searching chats is not the same as resuming a Claude session inside Cursor.
 
 ### Session catalog JSON
 
-`history list --format json` emits one JSON object with `schema_version: 1` and a `sessions` array. `history search --format json` emits the same session fields in a `matches` array, adding a `snippet` to each match. Empty results are empty arrays. Each session has `agent`, `session_id`, `source_path`, `project_cwd`, `name`, `title`, `started_at`, `updated_at`, and `capabilities` (`searchable`, `resumable`). Paths are absolute; timestamps are UTC ISO 8601 strings or `null`; `session_id` and `name` may be `null`. The list is ordered and filtered by `updated_at`, falling back to `started_at`. `resumable` is true for Pi sessions whose file exists and whose native header supplies both a session ID and an absolute project cwd. Other agents' records are searchable but are not advertised as resumable by this catalog. A client can pass a Pi `source_path` to Pi's `--session` option.
+`history list --format json` emits one JSON object with `schema_version: 1` and a `sessions` array. `history search --format json` emits the same session fields in a `matches` array, adding a `snippet` to each match. Empty results are empty arrays. Each session has `agent`, `session_id`, `source_path`, `project_cwd`, `repo_root`, `worktree`, `branch`, `name`, `title`, `started_at`, `updated_at`, and `capabilities` (`searchable`, `resumable`). `repo_root` is the main checkout shared by every worktree, `worktree` is the checkout name plus any subdirectory the chat started in, and `branch` may be `null`. Paths are absolute; timestamps are UTC ISO 8601 strings or `null`; `session_id` and `name` may be `null`. The list is ordered and filtered by `updated_at`, falling back to `started_at`. `resumable` is true for Pi sessions whose file exists and whose native header supplies both a session ID and an absolute project cwd. Other agents' records are searchable but are not advertised as resumable by this catalog. A client can pass a Pi `source_path` to Pi's `--session` option.
 
 ```json
 {"schema_version":1,"sessions":[{"agent":"pi","session_id":"01a0e3e9-cb4c-74bd-b847-a45e4654a82c","source_path":"/home/me/.pi/agent/sessions/--home-me-project--/session.jsonl","project_cwd":"/home/me/project","name":"Auth cache","title":"Auth cache","started_at":"2026-09-27T10:00:00Z","updated_at":"2026-09-27T10:04:00Z","capabilities":{"searchable":true,"resumable":true}}]}

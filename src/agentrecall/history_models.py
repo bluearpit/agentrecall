@@ -35,6 +35,8 @@ class SessionRecord:
     updated_at: str | None = None
     searchable: bool = True
     resumable: bool = False
+    repo_root: str | None = None
+    branch: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +52,20 @@ class SearchHit:
     updated_at: str | None = None
     searchable: bool = True
     resumable: bool = False
+    git_root: str | None = None
+    repo_root: str | None = None
+    branch: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WorktreeSummary:
+    repo_root: str
+    path: str
+    name: str
+    branch: str | None
+    sessions_by_agent: dict[str, int]
+    last_activity: str | None
+    exists: bool
 
 
 @dataclass(frozen=True, slots=True)
