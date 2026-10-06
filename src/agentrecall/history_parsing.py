@@ -544,7 +544,11 @@ def _extract_cwd(agent: AgentName, payload: dict[str, object]) -> str | None:
 
 
 def _extract_branch(agent: AgentName, payload: dict[str, object]) -> str | None:
-    """Branch metadata the agent wrote itself: Claude ``gitBranch`` or Codex ``git.branch``."""
+    """Branch metadata the agent wrote itself: Claude ``gitBranch`` or Codex ``git.branch``.
+
+    Claude stamps every event, so the caller keeps the last value seen and a
+    session that switched branches is filed under the branch it ended on.
+    """
     if agent is AgentName.claude:
         branch = payload.get("gitBranch")
         return branch if isinstance(branch, str) and branch.strip() else None

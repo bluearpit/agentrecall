@@ -22,8 +22,10 @@ from agentrecall.history_parsing import (
     select_turns,
 )
 from agentrecall.history_sources import (
+    ProjectScope,
     agent_from_source_path,
     belongs_to_project,
+    checkout_name,
     decode_encoded_project,
     discover_transcripts,
     encode_claude_project,
@@ -33,6 +35,7 @@ from agentrecall.history_sources import (
     git_toplevel,
     infer_cwd_from_source_path,
     project_match_keys,
+    project_scope,
     registered_worktrees,
 )
 from agentrecall.history_store import (
@@ -49,12 +52,14 @@ from agentrecall.layout import Layout
 
 __all__ = (
     "CommandRecord",
+    "ProjectScope",
     "SearchHit",
     "SessionRecord",
     "Turn",
     "WorktreeSummary",
     "agent_from_source_path",
     "belongs_to_project",
+    "checkout_name",
     "classify_command_kind",
     "connect",
     "decode_encoded_project",
@@ -74,6 +79,7 @@ __all__ = (
     "parse_history_bound",
     "parse_transcript",
     "project_match_keys",
+    "project_scope",
     "registered_worktrees",
     "reindex",
     "search",
@@ -139,7 +145,10 @@ def reindex(
     records: list[SessionRecord] = []
     observed: set[str] = set()
     skipped = 0
-    scope = None if all_projects else (cwd or Path.cwd())
+    # A schema change re-parses every transcript anyway, so write all of them:
+    # otherwise only the first project queried after an upgrade gets the new
+    # columns and every other project keeps stale rows forever.
+    scope = _scope(cwd, all_projects=all_projects or stale_schema)
     for agent, path in discover_transcripts(layout):
         source = str(path)
         try:
@@ -155,7 +164,7 @@ def reindex(
         except OSError:
             observed.discard(source)
             continue
-        if scope is not None and not belongs_to_project(record, scope):
+        if scope is not None and not scope.contains(record):
             skipped += 1
             continue
         records.append(record)
@@ -168,6 +177,14 @@ def reindex(
             stale_schema=stale_schema,
         )
     return len(records), skipped
+
+
+def _scope(
+    cwd: Path | None, *, all_projects: bool, this_worktree: bool = False
+) -> ProjectScope | None:
+    if all_projects:
+        return None
+    return project_scope(cwd or Path.cwd(), this_worktree=this_worktree)
 
 
 def _snippet(body: str, query: str) -> str:
@@ -258,10 +275,10 @@ def search(
         branch=branch,
     )
 
-    scope = None if all_projects else (cwd or Path.cwd())
+    scope = _scope(cwd, all_projects=all_projects, this_worktree=this_worktree)
     hits: list[SearchHit] = []
     for record, fts_snippet in candidates:
-        if scope is not None and not belongs_to_project(record, scope, this_worktree=this_worktree):
+        if scope is not None and not scope.contains(record):
             continue
         snippet = _choose_snippet(record.body, query, fts_snippet)
         hits.append(_hit_from_record(record, snippet=snippet))
@@ -291,10 +308,10 @@ def list_sessions(
         limit=_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit),
         branch=branch,
     )
-    scope = None if all_projects else (cwd or Path.cwd())
+    scope = _scope(cwd, all_projects=all_projects, this_worktree=this_worktree)
     hits: list[SearchHit] = []
     for record in records:
-        if scope is not None and not belongs_to_project(record, scope, this_worktree=this_worktree):
+        if scope is not None and not scope.contains(record):
             continue
         if not _in_time_range(record.updated_at or record.started_at, since=since, until=until):
             continue
@@ -330,12 +347,10 @@ def list_commands(
         limit=_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit),
         branch=branch,
     )
-    scope = None if all_projects else (cwd or Path.cwd())
+    scope = _scope(cwd, all_projects=all_projects, this_worktree=this_worktree)
     hits: list[CommandRecord] = []
     for session, command in records:
-        if scope is not None and not belongs_to_project(
-            session, scope, this_worktree=this_worktree
-        ):
+        if scope is not None and not scope.contains(session):
             continue
         if not _in_time_range(command.occurred_at, since=since, until=until):
             continue
@@ -343,15 +358,6 @@ def list_commands(
         if len(hits) >= limit:
             break
     return hits
-
-
-def _worktree_name(path: Path, repo_root: Path) -> str:
-    """Short label for a checkout: its directory name when it sits beside the repo root."""
-    if path == repo_root:
-        return repo_root.name
-    if path.parent == repo_root.parent:
-        return path.name
-    return str(path)
 
 
 def _activity(record: SessionRecord) -> str:
@@ -378,12 +384,13 @@ def list_worktrees(layout: Layout, *, cwd: Path | None = None) -> list[WorktreeS
         raise ValueError(f"{start} is not inside a git repository")
     repo_root = git_repo_root(toplevel) or toplevel
     reindex(layout, cwd=start)
+    scope = project_scope(start)
 
     checkouts: dict[Path, list[SessionRecord]] = {repo_root: []}
     for path in registered_worktrees(repo_root):
         checkouts.setdefault(path, [])
     for record in list_session_locations(layout.history_db):
-        if not belongs_to_project(record, start):
+        if not scope.contains(record):
             continue
         base = record.git_root or record.project_cwd
         if base is None:
@@ -404,7 +411,7 @@ def list_worktrees(layout: Layout, *, cwd: Path | None = None) -> list[WorktreeS
             WorktreeSummary(
                 repo_root=str(repo_root),
                 path=str(path),
-                name=_worktree_name(path, repo_root),
+                name=checkout_name(path, repo_root),
                 branch=branch,
                 sessions_by_agent=dict(sorted(counts.items())),
                 last_activity=max((_activity(record) for record in records), default="") or None,

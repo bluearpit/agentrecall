@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 
 from agentrecall.cli import app
 from agentrecall.history import (
+    connect,
     encode_claude_project,
     encode_cursor_project,
     git_head_branch,
@@ -319,3 +320,58 @@ def test_history_list_prints_worktree_and_branch(home: Path, tmp_path: Path) -> 
     assert narrowed.exit_code == 0, narrowed.output
     assert narrowed.stdout.count("\n") == 1
     assert "app-dat2-622@feature/dat2-622" in narrowed.stdout
+
+
+def test_schema_bump_backfills_every_project_not_just_the_queried_one(
+    home: Path, layout: Layout, tmp_path: Path
+) -> None:
+    repo_a = _repo(tmp_path, "alpha")
+    linked_a = _worktree(repo_a, "feature", branch="feature/a")
+    repo_b = _repo(tmp_path, "beta")
+    main_a = _claude_session(home, repo_a, "main", "alpha main", branch="develop")
+    wt_a = _cursor_session(home, linked_a, "wt", "alpha worktree")
+    _claude_session(home, repo_b, "b", "beta main", branch="main")
+
+    list_sessions(layout, all_projects=True)
+    connection = connect(layout.history_db)
+    connection.execute("PRAGMA user_version = 5")
+    connection.execute("UPDATE sessions SET repo_root = NULL, branch = NULL")
+    connection.commit()
+    connection.close()
+
+    # First query after the upgrade is scoped to an unrelated repo.
+    assert len(list_sessions(layout, cwd=repo_b)) == 1
+
+    # The other repo must still have been backfilled, so its worktree chat is found.
+    assert {hit.source_path for hit in list_sessions(layout, cwd=repo_a)} == {
+        str(main_a),
+        str(wt_a),
+    }
+    assert [hit.source_path for hit in list_sessions(layout, cwd=repo_a, branch="develop")] == [
+        str(main_a)
+    ]
+
+
+def test_worktree_outside_sibling_layout_uses_one_name_everywhere(
+    home: Path, tmp_path: Path
+) -> None:
+    repo = _repo(tmp_path, "app")
+    elsewhere = tmp_path / "scratch" / "wt"
+    elsewhere.parent.mkdir()
+    admin = repo / ".git" / "worktrees" / "wt"
+    admin.mkdir(parents=True)
+    elsewhere.mkdir()
+    (admin / "commondir").write_text("../..\n", encoding="utf-8")
+    (admin / "gitdir").write_text(f"{elsewhere / '.git'}\n", encoding="utf-8")
+    (admin / "HEAD").write_text("ref: refs/heads/feature/far\n", encoding="utf-8")
+    (elsewhere / ".git").write_text(f"gitdir: {admin}\n", encoding="utf-8")
+    _cursor_session(home, elsewhere, "far", "far away")
+
+    listed = runner.invoke(app, ["history", "list", "--cwd", str(repo), "--format", "json"])
+    assert listed.exit_code == 0, listed.output
+    [session] = json.loads(listed.stdout)["sessions"]
+    table = runner.invoke(app, ["history", "worktrees", "--cwd", str(repo), "--format", "json"])
+    assert table.exit_code == 0, table.output
+    rows = json.loads(table.stdout)["worktrees"]
+    [far_row] = [row for row in rows if row["path"] == str(elsewhere.resolve())]
+    assert session["worktree"] == far_row["name"] == str(elsewhere.resolve())

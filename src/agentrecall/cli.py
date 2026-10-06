@@ -14,6 +14,7 @@ from agentrecall import __version__
 from agentrecall.history import (
     SEARCH_SORTS,
     SearchHit,
+    checkout_name,
     format_turn,
     list_commands,
     list_sessions,
@@ -103,7 +104,7 @@ def _worktree_label(hit: SearchHit) -> str | None:
     if hit.project_cwd is None:
         return None
     base = Path(hit.git_root or hit.project_cwd)
-    label = base.name or str(base)
+    label = checkout_name(base, None if hit.repo_root is None else Path(hit.repo_root))
     try:
         inside = Path(hit.project_cwd).relative_to(base)
     except ValueError:
@@ -483,7 +484,10 @@ def history_search(
     ] = None,
     this_worktree: Annotated[
         bool,
-        typer.Option("--this-worktree", help="Only this checkout, not sibling worktrees."),
+        typer.Option(
+            "--this-worktree",
+            help="Only this checkout and its subdirectories; skip sibling worktrees.",
+        ),
     ] = False,
     limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 20,
     output_format: Annotated[
@@ -590,7 +594,10 @@ def history_list(
     ] = None,
     this_worktree: Annotated[
         bool,
-        typer.Option("--this-worktree", help="Only this checkout, not sibling worktrees."),
+        typer.Option(
+            "--this-worktree",
+            help="Only this checkout and its subdirectories; skip sibling worktrees.",
+        ),
     ] = False,
     limit: Annotated[int, typer.Option("--limit", min=1, max=200)] = 20,
     output_format: Annotated[
@@ -711,7 +718,10 @@ def history_commands(
     ] = None,
     this_worktree: Annotated[
         bool,
-        typer.Option("--this-worktree", help="Only this checkout, not sibling worktrees."),
+        typer.Option(
+            "--this-worktree",
+            help="Only this checkout and its subdirectories; skip sibling worktrees.",
+        ),
     ] = False,
     limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 50,
 ) -> None:
