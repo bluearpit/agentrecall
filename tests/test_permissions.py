@@ -154,3 +154,42 @@ def test_codex_writable_roots_merge_existing_config(home: Path, layout: Layout) 
     assert "/tmp/notes" in text
     assert str(home / ".agents" / "history") in text
     assert text.count("[sandbox_workspace_write]") == 1
+
+
+def test_home_directory_is_not_a_project(
+    home: Path, layout: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_policy(layout.permissions_file, dry_run=False)
+
+    lines, failed = sync_permissions(layout, cwd=home, dry_run=True)
+    assert failed == 0
+    assert sum(line.startswith("policy:") for line in lines) == 1
+    assert not any("/.opencode/opencode.json" in line for line in lines)
+    assert any(line.startswith("skip     project policy") for line in lines)
+
+    init_here = runner.invoke(app, ["permissions", "init", "--cwd", str(home)])
+    assert init_here.exit_code == 0, init_here.output
+    assert "writing the user policy instead" in init_here.stdout
+    assert str(layout.permissions_file) in init_here.stdout
+
+    monkeypatch.chdir(home)
+    applied = runner.invoke(app, ["permissions", "--apply"])
+    assert applied.exit_code == 0, applied.output
+    assert sum(line.startswith("policy:") for line in applied.stdout.splitlines()) == 1
+    assert (home / ".claude" / "settings.json").is_file()
+    assert (home / ".codex" / "rules" / "agentrecall.rules").is_file()
+    # The project layer would have written OpenCode's legacy global config as a project file.
+    assert not (home / ".opencode").exists()
+    assert (home / ".config" / "opencode" / "opencode.json").is_file()
+
+
+def test_missing_project_policy_is_reported(home: Path, layout: Layout, tmp_path: Path) -> None:
+    init_policy(layout.permissions_file, dry_run=False)
+    project = tmp_path / "repo"
+    (project / ".git").mkdir(parents=True)
+
+    lines, failed = sync_permissions(layout, cwd=project, dry_run=True)
+    assert failed == 0
+    assert sum(line.startswith("policy:") for line in lines) == 1
+    expected = project.resolve() / ".agents" / "permissions.yaml"
+    assert f"no project policy at {expected}" in "\n".join(lines)

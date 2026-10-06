@@ -403,13 +403,19 @@ def permissions_init(
     if option_cwd is None and ctx.obj and ctx.obj.get("cwd") is not None:
         option_cwd = ctx.obj["cwd"]
     dry_run = not apply
+    user_path = _layout().permissions_file
+    path = user_path
+    note: str | None = None
     if option_cwd is not None:
         root = git_toplevel(option_cwd) or option_cwd.resolve()
         path = project_permissions_file(root)
-    else:
-        path = _layout().permissions_file
+        if path.resolve() == user_path.resolve():
+            note = f"{root} is the user policy root; writing the user policy instead"
+            path = user_path
     if dry_run:
         typer.echo("dry-run (pass --apply to write)")
+    if note is not None:
+        typer.echo(note)
     typer.echo(init_policy(path, dry_run=dry_run))
 
 
