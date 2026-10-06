@@ -154,3 +154,25 @@ def test_codex_writable_roots_merge_existing_config(home: Path, layout: Layout) 
     assert "/tmp/notes" in text
     assert str(home / ".agents" / "history") in text
     assert text.count("[sandbox_workspace_write]") == 1
+
+
+def test_home_directory_is_not_a_project(
+    home: Path, layout: Layout, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    init_policy(layout.permissions_file, dry_run=False)
+
+    lines, failed = sync_permissions(layout, cwd=home, dry_run=True)
+    assert failed == 0
+    assert sum(line.startswith("policy:") for line in lines) == 1
+    assert not any("/.opencode/opencode.json" in line for line in lines)
+    assert any(line.startswith("skip     project policy") for line in lines)
+
+    monkeypatch.chdir(home)
+    applied = runner.invoke(app, ["permissions", "--apply"])
+    assert applied.exit_code == 0, applied.output
+    assert sum(line.startswith("policy:") for line in applied.stdout.splitlines()) == 1
+    assert (home / ".claude" / "settings.json").is_file()
+    assert (home / ".codex" / "rules" / "agentrecall.rules").is_file()
+    # The project layer would have written OpenCode's legacy global config as a project file.
+    assert not (home / ".opencode").exists()
+    assert (home / ".config" / "opencode" / "opencode.json").is_file()
