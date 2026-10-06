@@ -563,17 +563,18 @@ def sync_permissions(
     if cwd is not None and root is None:
         root = cwd.resolve()
     project_path = project_permissions_file(root) if root is not None else None
-    home_note: str | None = None
+    project_note: str | None = None
     if project_path is not None and _same_path(project_path, layout.permissions_file):
         # Running from the home directory makes HOME the "project", so the user
         # policy would be translated twice and project-level files would land
         # in global locations such as ~/.opencode/opencode.json.
-        home_note = (
-            f"skip     project policy ({root} is the home directory; "
-            f"{project_path} is already the user policy)"
-        )
+        project_note = f"skip     project policy ({project_path} is the user policy file)"
         project_path = None
     project_policy = load_policy_file(project_path) if project_path is not None else None
+    if project_path is not None and project_policy is None:
+        project_note = (
+            f"no project policy at {project_path}; `agentrecall permissions init --cwd .` adds one"
+        )
 
     if user_policy is None and project_policy is None:
         return [
@@ -630,8 +631,8 @@ def sync_permissions(
         )
         if not dry_run:
             _write_json(layout.permissions_managed_file, managed_user, dry_run=False)
-    if home_note is not None:
-        lines.append(home_note)
+    if project_note is not None and user_policy is not None:
+        lines.append(project_note)
 
     if project_policy is not None and root is not None and project_path is not None:
         if user_policy is not None:
