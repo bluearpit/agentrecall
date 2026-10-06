@@ -14,9 +14,11 @@ from agentrecall import __version__
 from agentrecall.history import (
     SEARCH_SORTS,
     SearchHit,
+    checkout_name,
     format_turn,
     list_commands,
     list_sessions,
+    list_worktrees,
     load_turns,
     parse_history_bound,
     reindex,
@@ -83,6 +85,9 @@ def _history_hit_json(hit: SearchHit, *, include_snippet: bool) -> dict[str, obj
         "session_id": hit.session_id,
         "source_path": hit.source_path,
         "project_cwd": hit.project_cwd,
+        "repo_root": hit.repo_root,
+        "worktree": _worktree_label(hit),
+        "branch": hit.branch,
         "name": hit.name,
         "title": hit.title,
         "started_at": hit.started_at,
@@ -92,6 +97,27 @@ def _history_hit_json(hit: SearchHit, *, include_snippet: bool) -> dict[str, obj
     if include_snippet:
         item["snippet"] = hit.snippet
     return item
+
+
+def _worktree_label(hit: SearchHit) -> str | None:
+    """Checkout directory name plus any subdirectory the session started in."""
+    if hit.project_cwd is None:
+        return None
+    base = Path(hit.git_root or hit.project_cwd)
+    label = checkout_name(base, None if hit.repo_root is None else Path(hit.repo_root))
+    try:
+        inside = Path(hit.project_cwd).relative_to(base)
+    except ValueError:
+        return label
+    return label if str(inside) == "." else f"{label}/{inside.as_posix()}"
+
+
+def _location(hit: SearchHit, *, all_projects: bool) -> str:
+    """Text-output location: ``worktree@branch`` inside one repo, full path with ``--all``."""
+    if hit.project_cwd is None:
+        return "-"
+    base = hit.project_cwd if all_projects else (_worktree_label(hit) or hit.project_cwd)
+    return f"{base}@{hit.branch}" if hit.branch else base
 
 
 def _history_format(value: str) -> str:
@@ -452,6 +478,17 @@ def history_search(
         str,
         typer.Option("--sort", help="relevance (default) or recent."),
     ] = "relevance",
+    branch: Annotated[
+        str | None,
+        typer.Option("--branch", help="Limit to a git branch; * and ? wildcards allowed."),
+    ] = None,
+    this_worktree: Annotated[
+        bool,
+        typer.Option(
+            "--this-worktree",
+            help="Only this checkout and its subdirectories; skip sibling worktrees.",
+        ),
+    ] = False,
     limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 20,
     output_format: Annotated[
         str,
@@ -471,6 +508,8 @@ def history_search(
         all_projects=all_projects,
         limit=limit,
         sort=sort,
+        branch=branch,
+        this_worktree=this_worktree,
     )
     if output_format == "json":
         typer.echo(
@@ -486,7 +525,8 @@ def history_search(
         typer.echo("no matches")
         return
     for hit in hits:
-        typer.echo(f"{hit.agent}\t{hit.started_at or '-'}\t{hit.project_cwd or '-'}")
+        location = _location(hit, all_projects=all_projects)
+        typer.echo(f"{hit.agent}\t{hit.started_at or '-'}\t{location}")
         typer.echo(f"  {hit.title}")
         typer.echo(f"  {hit.source_path}")
         typer.echo(f"  {hit.snippet}")
@@ -548,6 +588,17 @@ def history_list(
         str | None,
         typer.Option("--until", help="Inclusive end date (YYYY-MM-DD or ISO timestamp)."),
     ] = None,
+    branch: Annotated[
+        str | None,
+        typer.Option("--branch", help="Limit to a git branch; * and ? wildcards allowed."),
+    ] = None,
+    this_worktree: Annotated[
+        bool,
+        typer.Option(
+            "--this-worktree",
+            help="Only this checkout and its subdirectories; skip sibling worktrees.",
+        ),
+    ] = False,
     limit: Annotated[int, typer.Option("--limit", min=1, max=200)] = 20,
     output_format: Annotated[
         str,
@@ -565,6 +616,8 @@ def history_list(
         limit=limit,
         since=since_at,
         until=until_at,
+        branch=branch,
+        this_worktree=this_worktree,
     )
     if output_format == "json":
         typer.echo(
@@ -580,9 +633,57 @@ def history_list(
         typer.echo("no sessions")
         return
     for hit in hits:
-        typer.echo(f"{hit.agent}\t{hit.started_at or '-'}\t{hit.project_cwd or '-'}\t{hit.title}")
+        location = _location(hit, all_projects=all_projects)
+        typer.echo(f"{hit.agent}\t{hit.started_at or '-'}\t{location}\t{hit.title}")
         if hit.agent == AgentName.pi.value:
             typer.echo(f"  {hit.source_path}")
+
+
+@history_app.command("worktrees")
+def history_worktrees(
+    cwd: Annotated[
+        Path | None,
+        typer.Option("--cwd", help="Any checkout of the repo. Defaults to the current directory."),
+    ] = None,
+    output_format: Annotated[
+        str,
+        typer.Option("--format", help="text (default) or json."),
+    ] = "text",
+) -> None:
+    """Show every worktree of this repo with its branch and indexed chats per agent."""
+    _history_format(output_format)
+    try:
+        summaries = list_worktrees(_layout(), cwd=_optional_cwd(cwd))
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if output_format == "json":
+        typer.echo(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "repo_root": summaries[0].repo_root,
+                    "worktrees": [
+                        {
+                            "name": item.name,
+                            "path": item.path,
+                            "branch": item.branch,
+                            "exists": item.exists,
+                            "sessions_by_agent": item.sessions_by_agent,
+                            "last_activity": item.last_activity,
+                        }
+                        for item in summaries
+                    ],
+                }
+            )
+        )
+        return
+    typer.echo(f"repo\t{summaries[0].repo_root}")
+    for item in summaries:
+        counts = ", ".join(f"{agent} {count}" for agent, count in item.sessions_by_agent.items())
+        name = item.name if item.exists else f"{item.name} (removed)"
+        branch = item.branch or "detached"
+        typer.echo(f"{name}\t{branch}\t{item.last_activity or '-'}\t{counts or 'no chats'}")
 
 
 @history_app.command("commands")
@@ -611,6 +712,17 @@ def history_commands(
         str | None,
         typer.Option("--until", help="Inclusive end date (YYYY-MM-DD or ISO timestamp)."),
     ] = None,
+    branch: Annotated[
+        str | None,
+        typer.Option("--branch", help="Limit to a git branch; * and ? wildcards allowed."),
+    ] = None,
+    this_worktree: Annotated[
+        bool,
+        typer.Option(
+            "--this-worktree",
+            help="Only this checkout and its subdirectories; skip sibling worktrees.",
+        ),
+    ] = False,
     limit: Annotated[int, typer.Option("--limit", min=1, max=500)] = 50,
 ) -> None:
     """List shell commands indexed from local transcripts."""
@@ -625,6 +737,8 @@ def history_commands(
             limit=limit,
             since=since_at,
             until=until_at,
+            branch=branch,
+            this_worktree=this_worktree,
         )
     except ValueError as exc:
         typer.echo(f"Error: {exc}", err=True)

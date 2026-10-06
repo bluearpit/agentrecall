@@ -14,7 +14,7 @@ from typing import ParamSpec, TypeVar
 
 from agentrecall.history_models import CommandRecord, SessionRecord
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 SQLITE_BUSY_TIMEOUT_MS = 5_000
 SQLITE_WRITE_ATTEMPTS = 4
 SNIPPET_TOKENS = 24
@@ -44,7 +44,9 @@ def connect(db_path: Path) -> sqlite3.Connection:
             name TEXT,
             updated_at TEXT,
             searchable INTEGER NOT NULL DEFAULT 1,
-            resumable INTEGER NOT NULL DEFAULT 0
+            resumable INTEGER NOT NULL DEFAULT 0,
+            repo_root TEXT,
+            branch TEXT
         )
         """
     )
@@ -56,6 +58,8 @@ def connect(db_path: Path) -> sqlite3.Connection:
         ("updated_at", "TEXT"),
         ("searchable", "INTEGER NOT NULL DEFAULT 1"),
         ("resumable", "INTEGER NOT NULL DEFAULT 0"),
+        ("repo_root", "TEXT"),
+        ("branch", "TEXT"),
     ):
         if name not in columns:
             connection.execute(f"ALTER TABLE sessions ADD COLUMN {name} {definition}")
@@ -88,6 +92,7 @@ def connect(db_path: Path) -> sqlite3.Connection:
     connection.execute("CREATE INDEX IF NOT EXISTS commands_by_source ON commands (source_path)")
     connection.execute("CREATE INDEX IF NOT EXISTS commands_by_kind ON commands (kind)")
     connection.execute("CREATE INDEX IF NOT EXISTS commands_by_occurred ON commands (occurred_at)")
+    connection.execute("CREATE INDEX IF NOT EXISTS sessions_by_repo_root ON sessions (repo_root)")
     connection.commit()
     return connection
 
@@ -128,6 +133,8 @@ def _session_from_row(row: sqlite3.Row) -> SessionRecord:
             if "resumable" in row.keys()
             else False
         ),
+        repo_root=row["repo_root"] if "repo_root" in row.keys() else None,
+        branch=row["branch"] if "branch" in row.keys() else None,
     )
 
 
@@ -136,8 +143,8 @@ def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
         """
         INSERT INTO sessions (
             source_path, agent, mtime_ns, project_cwd, git_root, started_at, title, body,
-            session_id, name, updated_at, searchable, resumable
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            session_id, name, updated_at, searchable, resumable, repo_root, branch
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_path) DO UPDATE SET
             agent = excluded.agent,
             mtime_ns = excluded.mtime_ns,
@@ -150,7 +157,9 @@ def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
             name = excluded.name,
             updated_at = excluded.updated_at,
             searchable = excluded.searchable,
-            resumable = excluded.resumable
+            resumable = excluded.resumable,
+            repo_root = excluded.repo_root,
+            branch = excluded.branch
         """,
         (
             record.source_path,
@@ -166,6 +175,8 @@ def upsert(connection: sqlite3.Connection, record: SessionRecord) -> None:
             record.updated_at,
             int(record.searchable),
             int(record.resumable),
+            record.repo_root,
+            record.branch,
         ),
     )
     connection.execute("DELETE FROM sessions_fts WHERE source_path = ?", (record.source_path,))
@@ -307,6 +318,20 @@ def _session_activity_sql(table_alias: str = "") -> str:
     return f"COALESCE(NULLIF({prefix}updated_at, ''), {prefix}started_at)"
 
 
+def _append_branch_filter(
+    sql: str,
+    params: list[object],
+    *,
+    column: str,
+    branch: str | None,
+) -> str:
+    """Filter on a branch glob (``*`` and ``?``); a plain name matches exactly."""
+    if branch is not None:
+        sql += f" AND {column} GLOB ?"
+        params.append(branch)
+    return sql
+
+
 def _fts_query(raw: str) -> str:
     tokens = [token.strip() for token in raw.split() if token.strip()]
     if not tokens:
@@ -326,6 +351,7 @@ def search_candidates(
     agent: str | None,
     sort: str,
     limit: int,
+    branch: str | None = None,
 ) -> list[tuple[SessionRecord, str]]:
     sql = f"""
         SELECT
@@ -340,6 +366,7 @@ def search_candidates(
     if agent is not None:
         sql += " AND s.agent = ?"
         params.append(agent)
+    sql = _append_branch_filter(sql, params, column="s.branch", branch=branch)
     if sort == "recent":
         sql += f" ORDER BY {_session_activity_sql('s')} DESC LIMIT ?"
     else:
@@ -359,12 +386,14 @@ def list_stored_sessions(
     since: datetime | None,
     until: datetime | None,
     limit: int,
+    branch: str | None = None,
 ) -> list[SessionRecord]:
     sql = "SELECT * FROM sessions WHERE 1 = 1"
     params: list[object] = []
     if agent is not None:
         sql += " AND agent = ?"
         params.append(agent)
+    sql = _append_branch_filter(sql, params, column="branch", branch=branch)
     activity = _session_activity_sql()
     sql = _append_time_bounds(sql, params, column=activity, since=since, until=until)
     sql += f" ORDER BY {activity} DESC LIMIT ?"
@@ -381,11 +410,12 @@ def list_stored_commands(
     since: datetime | None,
     until: datetime | None,
     limit: int,
+    branch: str | None = None,
 ) -> list[tuple[SessionRecord, CommandRecord]]:
     sql = """
         SELECT
             c.agent, c.source_path, c.occurred_at, c.tool, c.command, c.purpose, c.kind,
-            s.project_cwd, s.git_root, s.started_at, s.title, s.body
+            s.project_cwd, s.git_root, s.repo_root, s.branch, s.started_at, s.title, s.body
         FROM commands AS c
         JOIN sessions AS s ON s.source_path = c.source_path
         WHERE 1 = 1
@@ -397,6 +427,7 @@ def list_stored_commands(
     if kind is not None:
         sql += " AND c.kind = ?"
         params.append(kind)
+    sql = _append_branch_filter(sql, params, column="s.branch", branch=branch)
     sql = _append_time_bounds(sql, params, column="c.occurred_at", since=since, until=until)
     sql += " ORDER BY c.occurred_at DESC LIMIT ?"
     params.append(limit)
@@ -416,3 +447,15 @@ def list_stored_commands(
             )
             for row in connection.execute(sql, params)
         ]
+
+
+def list_session_locations(db_path: Path) -> list[SessionRecord]:
+    """Every session's location fields, without bodies, for worktree summaries."""
+    sql = """
+        SELECT
+            source_path, agent, project_cwd, git_root, repo_root, branch,
+            started_at, updated_at, session_id, name, searchable, resumable
+        FROM sessions
+    """
+    with closing(_query_connection(db_path)) as connection:
+        return [_session_from_row(row) for row in connection.execute(sql)]

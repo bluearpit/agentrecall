@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agentrecall.history_models import SessionRecord
@@ -79,6 +80,125 @@ def git_toplevel(cwd: Path) -> Path | None:
     return None
 
 
+def _read_pointer_file(path: Path, prefix: str) -> Path | None:
+    """Read a one-line git pointer file such as ``gitdir: <path>``."""
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if prefix:
+        if not text.startswith(prefix):
+            return None
+        text = text[len(prefix) :].strip()
+    if not text:
+        return None
+    target = Path(text)
+    if not target.is_absolute():
+        target = path.parent / target
+    return target
+
+
+def git_dir(toplevel: Path) -> Path | None:
+    """Return the git directory for a checkout: ``.git`` or the linked worktree's gitdir."""
+    entry = toplevel / ".git"
+    if entry.is_dir():
+        return entry
+    if entry.is_file():
+        target = _read_pointer_file(entry, "gitdir:")
+        if target is not None and target.is_dir():
+            return target.resolve()
+    return None
+
+
+def is_linked_worktree(toplevel: Path) -> bool:
+    return (toplevel / ".git").is_file()
+
+
+def git_repo_root(toplevel: Path) -> Path | None:
+    """Return the main checkout shared by every worktree of ``toplevel``.
+
+    A plain checkout is its own repo root. A linked worktree keeps a ``.git``
+    file pointing at ``<repo>/.git/worktrees/<name>``; that directory's
+    ``commondir`` file leads back to the shared ``<repo>/.git``. No git
+    subprocess is needed. Returns None when the pointer cannot be followed.
+    """
+    directory = git_dir(toplevel)
+    if directory is None:
+        return None
+    if not is_linked_worktree(toplevel):
+        return toplevel
+    common = _read_pointer_file(directory / "commondir", "")
+    if common is not None and common.is_dir():
+        common = common.resolve()
+    elif directory.parent.name == "worktrees" and directory.parent.parent.name == ".git":
+        common = directory.parent.parent
+    else:
+        return None
+    return common.parent if common.name == ".git" else common
+
+
+def git_head_branch(toplevel: Path) -> str | None:
+    """Return the branch named in HEAD, or None for a detached or unreadable HEAD."""
+    directory = git_dir(toplevel)
+    if directory is None:
+        return None
+    try:
+        head = (directory / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    prefix = "ref: refs/heads/"
+    if head.startswith(prefix) and len(head) > len(prefix):
+        return head[len(prefix) :]
+    return None
+
+
+def describe_checkout(project_cwd: str | None) -> tuple[str | None, str | None, str | None]:
+    """Return ``(git_root, repo_root, branch)`` for a session's project directory.
+
+    ``branch`` is a point-in-time read of HEAD, taken only for a linked
+    worktree, which usually stays on one branch for its whole life. The main
+    checkout switches branches too often for its current HEAD to describe an
+    old session, so it stays None there and the transcript's own branch
+    metadata is used instead when present.
+    """
+    if project_cwd is None:
+        return None, None, None
+    toplevel = git_toplevel(Path(project_cwd))
+    if toplevel is None:
+        return None, None, None
+    repo_root = git_repo_root(toplevel)
+    branch = git_head_branch(toplevel) if is_linked_worktree(toplevel) else None
+    return str(toplevel), None if repo_root is None else str(repo_root), branch
+
+
+def checkout_name(path: Path, repo_root: Path | None) -> str:
+    """One label for a checkout, shared by every command.
+
+    The directory name when the checkout is the repo root or sits beside it
+    (the usual ``repo-feature`` layout); otherwise the full path, so a
+    worktree parked elsewhere is never confused with a sibling.
+    """
+    if repo_root is None or path == repo_root or path.parent == repo_root.parent:
+        return path.name or str(path)
+    return str(path)
+
+
+def registered_worktrees(repo_root: Path) -> list[Path]:
+    """List linked worktree checkouts registered under ``<repo_root>/.git/worktrees``."""
+    worktrees_dir = repo_root / ".git" / "worktrees"
+    if not worktrees_dir.is_dir():
+        return []
+    found: list[Path] = []
+    for entry in sorted(worktrees_dir.iterdir()):
+        pointer = _read_pointer_file(entry / "gitdir", "")
+        if pointer is None:
+            continue
+        checkout = pointer.parent if pointer.name == ".git" else pointer
+        if checkout.is_dir():
+            found.append(checkout.resolve())
+    return found
+
+
 def discover_transcripts(layout: Layout) -> list[tuple[AgentName, Path]]:
     found: list[tuple[AgentName, Path]] = []
     claude = layout.agent(AgentName.claude)
@@ -151,39 +271,79 @@ def infer_cwd_from_source_path(
     return None
 
 
-def project_match_keys(cwd: Path) -> set[str]:
+def _add_path_keys(keys: set[str], path: Path) -> None:
+    keys.add(str(path))
+    keys.add(encode_claude_project(str(path)))
+    keys.add(encode_cursor_project(str(path)))
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectScope:
+    """The project a query is about, resolved once so matching needs no filesystem reads."""
+
+    toplevel: Path
+    keys: frozenset[str]
+    this_worktree: bool
+    _inside: dict[str, bool] = field(default_factory=dict, repr=False, compare=False)
+
+    def _is_inside_toplevel(self, project_cwd: str) -> bool:
+        """Subdirectory check, memoized per directory so a table scan stats each cwd once."""
+        cached = self._inside.get(project_cwd)
+        if cached is not None:
+            return cached
+        candidate = Path(project_cwd)
+        inside = candidate.is_relative_to(self.toplevel)
+        if not inside:
+            try:
+                inside = candidate.resolve().is_relative_to(self.toplevel)
+            except OSError:
+                inside = False
+        self._inside[project_cwd] = inside
+        return inside
+
+    def contains(self, record: SessionRecord) -> bool:
+        keys = self.keys
+        if record.project_cwd is not None and record.project_cwd in keys:
+            return True
+        if record.git_root is not None and record.git_root in keys:
+            return True
+        if not self.this_worktree and record.repo_root is not None and record.repo_root in keys:
+            return True
+        source = record.source_path.replace("\\", "/")
+        padded = f"/{source}/"
+        for key in keys:
+            if f"/{key}/" in padded:
+                return True
+        return record.project_cwd is not None and self._is_inside_toplevel(record.project_cwd)
+
+
+def project_scope(cwd: Path, *, this_worktree: bool = False) -> ProjectScope:
+    """Resolve ``cwd`` to the project it belongs to.
+
+    By default the scope covers the whole repository, so a query from any
+    worktree matches sessions recorded in every other worktree of the same
+    repo. ``this_worktree`` narrows it to the checkout that contains ``cwd``
+    and that checkout's subdirectories.
+    """
     resolved = cwd.resolve()
-    keys = {
-        str(resolved),
-        str(cwd),
-        encode_claude_project(str(resolved)),
-        encode_cursor_project(str(resolved)),
-    }
+    keys = {str(resolved), str(cwd)}
+    _add_path_keys(keys, resolved)
     toplevel = git_toplevel(resolved)
     if toplevel is not None:
-        keys.add(str(toplevel))
-        keys.add(encode_claude_project(str(toplevel)))
-        keys.add(encode_cursor_project(str(toplevel)))
-    return {key for key in keys if key}
+        _add_path_keys(keys, toplevel)
+        repo_root = None if this_worktree else git_repo_root(toplevel)
+        if repo_root is not None:
+            _add_path_keys(keys, repo_root)
+    return ProjectScope(
+        toplevel=toplevel or resolved,
+        keys=frozenset(key for key in keys if key),
+        this_worktree=this_worktree,
+    )
 
 
-def belongs_to_project(record: SessionRecord, cwd: Path) -> bool:
-    keys = project_match_keys(cwd)
-    if record.project_cwd is not None and record.project_cwd in keys:
-        return True
-    if record.git_root is not None and record.git_root in keys:
-        return True
-    source = record.source_path.replace("\\", "/")
-    padded = f"/{source}/"
-    for key in keys:
-        if f"/{key}/" in padded:
-            return True
-    resolved = cwd.resolve()
-    toplevel = git_toplevel(resolved) or resolved
-    if record.project_cwd is not None:
-        try:
-            Path(record.project_cwd).resolve().relative_to(toplevel)
-            return True
-        except ValueError:
-            pass
-    return False
+def project_match_keys(cwd: Path, *, this_worktree: bool = False) -> set[str]:
+    return set(project_scope(cwd, this_worktree=this_worktree).keys)
+
+
+def belongs_to_project(record: SessionRecord, cwd: Path, *, this_worktree: bool = False) -> bool:
+    return project_scope(cwd, this_worktree=this_worktree).contains(record)

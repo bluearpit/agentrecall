@@ -3,12 +3,14 @@ name: search-project-history
 description: >-
   Search local Cursor, Claude Code, and Codex chats, including dated session
   lists and shell commands (pytest, curl, git). Defaults to the current
-  project (`--cwd .`). Use `--cwd <path>` for another repo, or `--all` for
-  every project (ask first). Use when the user asks about previous
-  conversations, past decisions, what we did last time, remind me, we already
-  discussed, project history, chats since a date, last week, which agent,
-  commands we ran, how we tested or curled something, smoke tests, or work
-  that may have happened in another coding agent.
+  project (`--cwd .`), which covers every git worktree of the same repo. Use
+  `--cwd <path>` for another repo, or `--all` for every project (ask first).
+  Use when the user asks about previous conversations, past decisions, what
+  we did last time, remind me, we already discussed, project history, chats
+  since a date, last week, which agent, commands we ran, how we tested or
+  curled something, smoke tests, work on a branch or PR, which worktree
+  something happened in, or work that may have happened in another coding
+  agent.
 ---
 
 # Search project history
@@ -23,6 +25,7 @@ Search local chats from Cursor, Claude Code, and Codex. Transcripts stay in each
 - You need prior context for this repo and do not have it in the current conversation
 - The user asks which commands were run, how we tested, or which curl/git was used
 - The user wants chats or commands since a date, last week, or from a named agent
+- The user asks about a branch or PR, or work that happened in another worktree of this repo
 
 ## Command
 
@@ -43,10 +46,18 @@ agentrecall upgrade --apply
 
 The history index is `~/.agents/history/index.sqlite`. That path is outside the project workspace. After `agentrecall permissions --apply`, Claude, Codex, and OpenCode get write access to it; Cursor CLI allowlists `agentrecall` but still has no extra-root mapping. If a sandbox blocks the command, request the permission once and continue. Do not scrape transcript files yourself.
 
-Default to the current project:
+Default to the current project. `--cwd` matches the whole repository, so a query from any checkout also returns chats from its sibling git worktrees:
 
 ```bash
 agentrecall history search "<query>" --cwd .
+```
+
+Reviewing a PR or a branch: see which worktrees exist and where the chats are, then filter by branch. Do not fall back to `git worktree list` and guessing.
+
+```bash
+agentrecall history worktrees --cwd .
+agentrecall history list --cwd . --branch "feature/dat2-622*"
+agentrecall history search "<query>" --cwd . --branch "feature/*"
 ```
 
 Another repo:
@@ -77,7 +88,10 @@ agentrecall history search "<query>" --cwd .
 
 Optional flags:
 
-- `--agent claude|cursor|codex` to limit the source
+- `--agent claude|cursor|codex|pi` to limit the source. Leave it off unless the user names an agent; the work may have happened in another one
+- `--branch <name-or-glob>` on `search`, `list`, and `commands`. Claude and Codex record the branch themselves; Cursor and Pi chats get the branch only when they ran inside a linked worktree
+- `--this-worktree` on `search`, `list`, and `commands` to exclude sibling worktrees
+- `agentrecall history worktrees --cwd .` for one table per repo: worktree, branch, chats per agent, last activity
 - `--sort relevance` (default) or `--sort recent`
 - `agentrecall history list --cwd .` for recent sessions without a query
 - `agentrecall history list --cwd . --since 2026-08-01` to bound by date (`--until` too)
@@ -87,7 +101,7 @@ Optional flags:
 
 ## How to answer
 
-- Summarize hits: agent, date, title, project path, and a short snippet
+- Summarize hits: agent, date, title, worktree and branch (or project path), and a short snippet
 - Run `history show --grep` on a candidate path to verify; quote only the lines that answer the question
 - Do not dump whole transcripts into context
 - Do not claim you can resume a Claude session inside Cursor or Codex

@@ -6,7 +6,13 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agentrecall.history_models import CommandRecord, SearchHit, SessionRecord, Turn
+from agentrecall.history_models import (
+    CommandRecord,
+    SearchHit,
+    SessionRecord,
+    Turn,
+    WorktreeSummary,
+)
 from agentrecall.history_parsing import (
     classify_command_kind,
     format_turn,
@@ -16,20 +22,27 @@ from agentrecall.history_parsing import (
     select_turns,
 )
 from agentrecall.history_sources import (
+    ProjectScope,
     agent_from_source_path,
     belongs_to_project,
+    checkout_name,
     decode_encoded_project,
     discover_transcripts,
     encode_claude_project,
     encode_cursor_project,
+    git_head_branch,
+    git_repo_root,
     git_toplevel,
     infer_cwd_from_source_path,
     project_match_keys,
+    project_scope,
+    registered_worktrees,
 )
 from agentrecall.history_store import (
     _index_state,
     _write_records,
     connect,
+    list_session_locations,
     list_stored_commands,
     list_stored_sessions,
     search_candidates,
@@ -39,11 +52,14 @@ from agentrecall.layout import Layout
 
 __all__ = (
     "CommandRecord",
+    "ProjectScope",
     "SearchHit",
     "SessionRecord",
     "Turn",
+    "WorktreeSummary",
     "agent_from_source_path",
     "belongs_to_project",
+    "checkout_name",
     "classify_command_kind",
     "connect",
     "decode_encoded_project",
@@ -51,15 +67,20 @@ __all__ = (
     "encode_claude_project",
     "encode_cursor_project",
     "format_turn",
+    "git_head_branch",
+    "git_repo_root",
     "git_toplevel",
     "infer_cwd_from_source_path",
     "iter_transcript_turns",
     "list_commands",
     "list_sessions",
+    "list_worktrees",
     "load_turns",
     "parse_history_bound",
     "parse_transcript",
     "project_match_keys",
+    "project_scope",
+    "registered_worktrees",
     "reindex",
     "search",
     "select_turns",
@@ -124,7 +145,10 @@ def reindex(
     records: list[SessionRecord] = []
     observed: set[str] = set()
     skipped = 0
-    scope = None if all_projects else (cwd or Path.cwd())
+    # A schema change re-parses every transcript anyway, so write all of them:
+    # otherwise only the first project queried after an upgrade gets the new
+    # columns and every other project keeps stale rows forever.
+    scope = _scope(cwd, all_projects=all_projects or stale_schema)
     for agent, path in discover_transcripts(layout):
         source = str(path)
         try:
@@ -140,7 +164,7 @@ def reindex(
         except OSError:
             observed.discard(source)
             continue
-        if scope is not None and not belongs_to_project(record, scope):
+        if scope is not None and not scope.contains(record):
             skipped += 1
             continue
         records.append(record)
@@ -153,6 +177,14 @@ def reindex(
             stale_schema=stale_schema,
         )
     return len(records), skipped
+
+
+def _scope(
+    cwd: Path | None, *, all_projects: bool, this_worktree: bool = False
+) -> ProjectScope | None:
+    if all_projects:
+        return None
+    return project_scope(cwd or Path.cwd(), this_worktree=this_worktree)
 
 
 def _snippet(body: str, query: str) -> str:
@@ -213,6 +245,9 @@ def _hit_from_record(record: SessionRecord, *, snippet: str) -> SearchHit:
         updated_at=record.updated_at,
         searchable=record.searchable,
         resumable=record.resumable,
+        git_root=record.git_root,
+        repo_root=record.repo_root,
+        branch=record.branch,
     )
 
 
@@ -225,6 +260,8 @@ def search(
     all_projects: bool = False,
     limit: int = 20,
     sort: str = "relevance",
+    branch: str | None = None,
+    this_worktree: bool = False,
 ) -> list[SearchHit]:
     if sort not in SEARCH_SORTS:
         raise ValueError(f"unknown search sort {sort!r}")
@@ -235,12 +272,13 @@ def search(
         agent=agent,
         sort=sort,
         limit=_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit),
+        branch=branch,
     )
 
-    scope = None if all_projects else (cwd or Path.cwd())
+    scope = _scope(cwd, all_projects=all_projects, this_worktree=this_worktree)
     hits: list[SearchHit] = []
     for record, fts_snippet in candidates:
-        if scope is not None and not belongs_to_project(record, scope):
+        if scope is not None and not scope.contains(record):
             continue
         snippet = _choose_snippet(record.body, query, fts_snippet)
         hits.append(_hit_from_record(record, snippet=snippet))
@@ -258,6 +296,8 @@ def list_sessions(
     limit: int = 20,
     since: datetime | None = None,
     until: datetime | None = None,
+    branch: str | None = None,
+    this_worktree: bool = False,
 ) -> list[SearchHit]:
     reindex(layout, cwd=cwd, all_projects=all_projects)
     records = list_stored_sessions(
@@ -266,11 +306,12 @@ def list_sessions(
         since=since,
         until=until,
         limit=_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit),
+        branch=branch,
     )
-    scope = None if all_projects else (cwd or Path.cwd())
+    scope = _scope(cwd, all_projects=all_projects, this_worktree=this_worktree)
     hits: list[SearchHit] = []
     for record in records:
-        if scope is not None and not belongs_to_project(record, scope):
+        if scope is not None and not scope.contains(record):
             continue
         if not _in_time_range(record.updated_at or record.started_at, since=since, until=until):
             continue
@@ -291,6 +332,8 @@ def list_commands(
     limit: int = 50,
     since: datetime | None = None,
     until: datetime | None = None,
+    branch: str | None = None,
+    this_worktree: bool = False,
 ) -> list[CommandRecord]:
     if kind is not None and kind not in COMMAND_KINDS:
         raise ValueError(f"unknown command kind {kind!r}")
@@ -302,11 +345,12 @@ def list_commands(
         since=since,
         until=until,
         limit=_fetch_limit(cwd=cwd, all_projects=all_projects, limit=limit),
+        branch=branch,
     )
-    scope = None if all_projects else (cwd or Path.cwd())
+    scope = _scope(cwd, all_projects=all_projects, this_worktree=this_worktree)
     hits: list[CommandRecord] = []
     for session, command in records:
-        if scope is not None and not belongs_to_project(session, scope):
+        if scope is not None and not scope.contains(session):
             continue
         if not _in_time_range(command.occurred_at, since=since, until=until):
             continue
@@ -314,3 +358,64 @@ def list_commands(
         if len(hits) >= limit:
             break
     return hits
+
+
+def _activity(record: SessionRecord) -> str:
+    return record.updated_at or record.started_at or ""
+
+
+def _latest_branch(records: list[SessionRecord]) -> str | None:
+    """Branch of the most recently active session that recorded one."""
+    for record in sorted(records, key=_activity, reverse=True):
+        if record.branch:
+            return record.branch
+    return None
+
+
+def list_worktrees(layout: Layout, *, cwd: Path | None = None) -> list[WorktreeSummary]:
+    """Summarize every worktree of the repository containing ``cwd``.
+
+    Registered worktrees with no indexed chats are listed too, so an agent can
+    see where work happened without guessing from ``git worktree list``.
+    """
+    start = (cwd or Path.cwd()).resolve()
+    toplevel = git_toplevel(start)
+    if toplevel is None:
+        raise ValueError(f"{start} is not inside a git repository")
+    repo_root = git_repo_root(toplevel) or toplevel
+    reindex(layout, cwd=start)
+    scope = project_scope(start)
+
+    checkouts: dict[Path, list[SessionRecord]] = {repo_root: []}
+    for path in registered_worktrees(repo_root):
+        checkouts.setdefault(path, [])
+    for record in list_session_locations(layout.history_db):
+        if not scope.contains(record):
+            continue
+        base = record.git_root or record.project_cwd
+        if base is None:
+            continue
+        checkouts.setdefault(Path(base), []).append(record)
+
+    summaries: list[WorktreeSummary] = []
+    for path in sorted(checkouts, key=lambda item: (item != repo_root, str(item))):
+        records = checkouts[path]
+        exists = path.is_dir()
+        branch = git_head_branch(path) if exists else None
+        if branch is None:
+            branch = _latest_branch(records)
+        counts: dict[str, int] = {}
+        for record in records:
+            counts[record.agent] = counts.get(record.agent, 0) + 1
+        summaries.append(
+            WorktreeSummary(
+                repo_root=str(repo_root),
+                path=str(path),
+                name=checkout_name(path, repo_root),
+                branch=branch,
+                sessions_by_agent=dict(sorted(counts.items())),
+                last_activity=max((_activity(record) for record in records), default="") or None,
+                exists=exists,
+            )
+        )
+    return summaries

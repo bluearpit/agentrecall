@@ -11,7 +11,7 @@ from pathlib import Path
 from agentrecall.history_models import CommandRecord, SessionRecord, Turn
 from agentrecall.history_sources import (
     agent_from_source_path,
-    git_toplevel,
+    describe_checkout,
     infer_cwd_from_source_path,
 )
 from agentrecall.layout import AgentName, Layout
@@ -294,6 +294,7 @@ def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
     texts: list[str] = []
     extracted: list[CommandRecord] = []
     project_cwd: str | None = None
+    branch: str | None = None
     started_at: str | None = None
     last_timestamp: str | None = None
     body_full = False
@@ -317,6 +318,9 @@ def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
                 extracted_cwd = _extract_cwd(agent, payload)
                 if extracted_cwd is not None and project_cwd is None:
                     project_cwd = extracted_cwd
+                extracted_branch = _extract_branch(agent, payload)
+                if extracted_branch is not None:
+                    branch = extracted_branch
                 extracted.extend(
                     _extract_commands(
                         agent,
@@ -336,11 +340,9 @@ def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
     if project_cwd is None:
         project_cwd = infer_cwd_from_source_path(agent, path)
 
-    git_root: str | None = None
-    if project_cwd is not None:
-        toplevel = git_toplevel(Path(project_cwd))
-        if toplevel is not None:
-            git_root = str(toplevel)
+    git_root, repo_root, head_branch = describe_checkout(project_cwd)
+    if branch is None:
+        branch = head_branch
 
     body = "\n".join(texts)[:MAX_BODY_CHARS]
     stat = path.stat()
@@ -371,6 +373,8 @@ def parse_transcript(agent: AgentName, path: Path) -> SessionRecord:
         body=body,
         commands=commands,
         updated_at=_normalize_timestamp(last_timestamp) or started_at,
+        repo_root=repo_root,
+        branch=branch,
     )
 
 
@@ -496,13 +500,13 @@ def _parse_pi_transcript(path: Path) -> SessionRecord:
     fallback_time = datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat()
     started_at = started_at or _normalize_timestamp(fallback_time)
     updated_at = updated_at or _normalize_timestamp(fallback_time)
-    git_root = git_toplevel(Path(project_cwd)) if project_cwd is not None else None
+    git_root, repo_root, branch = describe_checkout(project_cwd)
     return SessionRecord(
         agent=AgentName.pi.value,
         source_path=str(path),
         mtime_ns=stat.st_mtime_ns,
         project_cwd=project_cwd,
-        git_root=str(git_root) if git_root is not None else None,
+        git_root=git_root,
         started_at=started_at,
         title=name or _first_user_title([first_user_text] if first_user_text else []),
         body="\n".join(texts)[:MAX_BODY_CHARS],
@@ -522,6 +526,8 @@ def _parse_pi_transcript(path: Path) -> SessionRecord:
         name=name,
         updated_at=updated_at,
         resumable=session_id is not None and project_cwd is not None,
+        repo_root=repo_root,
+        branch=branch,
     )
 
 
@@ -534,6 +540,25 @@ def _extract_cwd(agent: AgentName, payload: dict[str, object]) -> str | None:
         nested_cwd = nested.get("cwd")
         if isinstance(nested_cwd, str) and nested_cwd.startswith("/"):
             return nested_cwd
+    return None
+
+
+def _extract_branch(agent: AgentName, payload: dict[str, object]) -> str | None:
+    """Branch metadata the agent wrote itself: Claude ``gitBranch`` or Codex ``git.branch``.
+
+    Claude stamps every event, so the caller keeps the last value seen and a
+    session that switched branches is filed under the branch it ended on.
+    """
+    if agent is AgentName.claude:
+        branch = payload.get("gitBranch")
+        return branch if isinstance(branch, str) and branch.strip() else None
+    if agent is AgentName.codex:
+        nested = payload.get("payload")
+        if isinstance(nested, dict):
+            git_meta = nested.get("git")
+            if isinstance(git_meta, dict):
+                branch = git_meta.get("branch")
+                return branch if isinstance(branch, str) and branch.strip() else None
     return None
 
 
