@@ -4,6 +4,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from agentrecall.cli import app
@@ -18,9 +19,11 @@ from agentrecall.history import (
     list_worktrees,
     parse_transcript,
     project_match_keys,
+    project_scope,
     registered_worktrees,
     search,
 )
+from agentrecall.history_models import SessionRecord
 from agentrecall.layout import AgentName, Layout
 
 runner = CliRunner()
@@ -375,3 +378,48 @@ def test_worktree_outside_sibling_layout_uses_one_name_everywhere(
     rows = json.loads(table.stdout)["worktrees"]
     [far_row] = [row for row in rows if row["path"] == str(elsewhere.resolve())]
     assert session["worktree"] == far_row["name"] == str(elsewhere.resolve())
+
+
+def test_project_scope_resolves_each_directory_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo(tmp_path)
+    scope = project_scope(repo)
+    calls: list[str] = []
+    original = Path.resolve
+
+    def counting_resolve(self: Path, strict: bool = False) -> Path:
+        calls.append(str(self))
+        return original(self, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    elsewhere = str(tmp_path / "elsewhere")
+    records = [
+        SessionRecord(
+            agent="cursor",
+            source_path=f"/x/{index}.jsonl",
+            mtime_ns=0,
+            project_cwd=elsewhere,
+            git_root=None,
+            started_at=None,
+            title="",
+            body="",
+            commands=(),
+        )
+        for index in range(50)
+    ]
+    assert not any(scope.contains(record) for record in records)
+    assert calls == [elsewhere]
+    inside = SessionRecord(
+        agent="cursor",
+        source_path="/x/in.jsonl",
+        mtime_ns=0,
+        project_cwd=str(repo / "pipelines"),
+        git_root=None,
+        started_at=None,
+        title="",
+        body="",
+        commands=(),
+    )
+    assert scope.contains(inside)
+    assert calls == [elsewhere], "a plain prefix match needs no filesystem access"

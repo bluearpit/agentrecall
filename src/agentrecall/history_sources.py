@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from agentrecall.history_models import SessionRecord
@@ -284,6 +284,22 @@ class ProjectScope:
     toplevel: Path
     keys: frozenset[str]
     this_worktree: bool
+    _inside: dict[str, bool] = field(default_factory=dict, repr=False, compare=False)
+
+    def _is_inside_toplevel(self, project_cwd: str) -> bool:
+        """Subdirectory check, memoized per directory so a table scan stats each cwd once."""
+        cached = self._inside.get(project_cwd)
+        if cached is not None:
+            return cached
+        candidate = Path(project_cwd)
+        inside = candidate.is_relative_to(self.toplevel)
+        if not inside:
+            try:
+                inside = candidate.resolve().is_relative_to(self.toplevel)
+            except OSError:
+                inside = False
+        self._inside[project_cwd] = inside
+        return inside
 
     def contains(self, record: SessionRecord) -> bool:
         keys = self.keys
@@ -298,13 +314,7 @@ class ProjectScope:
         for key in keys:
             if f"/{key}/" in padded:
                 return True
-        if record.project_cwd is not None:
-            try:
-                Path(record.project_cwd).resolve().relative_to(self.toplevel)
-                return True
-            except ValueError:
-                pass
-        return False
+        return record.project_cwd is not None and self._is_inside_toplevel(record.project_cwd)
 
 
 def project_scope(cwd: Path, *, this_worktree: bool = False) -> ProjectScope:
