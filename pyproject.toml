@@ -1,6 +1,6 @@
 [project]
 name = "agentrecall-cli"
-version = "0.2.4"
+version = "0.3.0"
 description = "Use ~/.agents as a portable home for coding-agent skills, instructions, permissions, and history."
 readme = "README.md"
 license = "MIT"
