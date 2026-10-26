@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -111,9 +112,33 @@ def files_identical(left: Path, right: Path) -> bool:
     return left.read_bytes() == right.read_bytes()
 
 
+def blocking_ancestor(dest: Path) -> Path | None:
+    """Return the nearest existing ancestor of dest that is not a directory, if any."""
+    for parent in dest.parents:
+        try:
+            st = parent.stat()
+        except OSError:
+            if parent.is_symlink():
+                return parent
+            continue
+        if stat.S_ISDIR(st.st_mode):
+            return None
+        return parent
+    return None
+
+
+def _blocked(dest: Path, src: Path) -> PlanItem | None:
+    blocker = blocking_ancestor(dest)
+    if blocker is None:
+        return None
+    return PlanItem(Op.conflict, dest, src, f"parent {blocker} is not a directory")
+
+
 def plan_directory_symlink(src: Path, dest: Path) -> PlanItem:
     if not src.is_dir():
         return PlanItem(Op.conflict, dest, src, "source is not a directory")
+    if (blocked := _blocked(dest, src)) is not None:
+        return blocked
     if is_linked_to(dest, src):
         return PlanItem(Op.skip, dest, src, "already linked to canonical skill")
     if dest.is_symlink():
@@ -155,6 +180,8 @@ def plan_directory_symlink(src: Path, dest: Path) -> PlanItem:
 def plan_file_link(src: Path, dest: Path, mode: LinkMode) -> PlanItem:
     if not src.is_file():
         return PlanItem(Op.conflict, dest, src, "source is not a file")
+    if (blocked := _blocked(dest, src)) is not None:
+        return blocked
     if is_linked_to(dest, src):
         return PlanItem(Op.skip, dest, src, "already linked to canonical file")
 

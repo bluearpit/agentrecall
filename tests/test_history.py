@@ -934,3 +934,13 @@ def test_search_rejects_unknown_sort(home: Path, tmp_path: Path) -> None:
         ["history", "search", "widget", "--cwd", str(project), "--sort", "nope"],
     )
     assert result.exit_code == 1
+
+
+def test_history_commands_report_clean_error_when_agents_home_is_file(home: Path) -> None:
+    (home / ".agents").write_text("not a dir\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["history", "list"])
+
+    assert result.exit_code == 1
+    assert "Error:" in result.stderr or "Error:" in result.stdout
+    assert "is not a directory" in result.stderr or "is not a directory" in result.stdout

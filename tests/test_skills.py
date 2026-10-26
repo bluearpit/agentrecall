@@ -67,3 +67,16 @@ def test_identical_copy_replaced_stale_conflicts(home: Path, layout: Layout) -> 
     assert is_linked_to(same_copy, canonical)
     assert stale_copy.is_dir() and not stale_copy.is_symlink()
     assert any("conflict" in line for line in lines)
+
+
+def test_claude_home_file_is_conflict_not_crash(home: Path, layout: Layout) -> None:
+    _write_skill(layout.agents_skills, "pr-review", "# review\n")
+    (home / ".claude").write_text("not a dir\n", encoding="utf-8")
+
+    lines, conflicts = sync_skills(layout, dry_run=False)
+
+    claude_lines = [line for line in lines if str(home / ".claude" / "skills") in line]
+    assert claude_lines
+    assert all(line.startswith("conflict") for line in claude_lines)
+    assert conflicts == len(claude_lines)
+    assert (home / ".claude").read_text(encoding="utf-8") == "not a dir\n"

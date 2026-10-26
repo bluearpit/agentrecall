@@ -113,3 +113,18 @@ def test_instructions_link_agent_pi(home: Path, layout: Layout) -> None:
     assert dest.is_symlink()
     assert dest.resolve() == layout.agents_instructions.resolve()
     assert not (home / ".codex" / "AGENTS.md").exists()
+
+
+def test_agent_home_file_reports_conflict_and_not_installed(home: Path, layout: Layout) -> None:
+    (home / ".codex").write_text("not a dir\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["instructions", "--apply"])
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "is not a directory" in result.stdout
+    assert (home / ".claude" / "CLAUDE.md").is_symlink()
+
+    status = runner.invoke(app, ["status"])
+    codex_line = next(line for line in status.stdout.splitlines() if "codex " in line)
+    assert "installed=no" in codex_line

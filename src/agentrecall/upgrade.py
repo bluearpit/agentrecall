@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 from agentrecall import __version__
 from agentrecall.layout import Layout
+from agentrecall.linking import blocking_ancestor
 
 SKIP_ENV = "AGENTRECALL_SKIP_UPDATE_CHECK"
 CHECK_INTERVAL = timedelta(hours=24)
@@ -116,6 +117,8 @@ def _read_update_check(path: Path) -> tuple[str | None, datetime | None]:
 
 def _write_update_check(path: Path, *, latest: str | None, checked_at: datetime) -> bool:
     """Write the cache. Never raise: a blocked cache must not stop the command."""
+    if blocking_ancestor(path) is not None:
+        return False
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
