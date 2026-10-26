@@ -194,4 +194,4 @@ class Layout:
         )
 
     def is_installed(self, spec: AgentSpec) -> bool:
-        return spec.detect_path.exists()
+        return spec.detect_path.is_dir()
