@@ -41,7 +41,7 @@ Never include the "Generated with an AI coding agent" footer line in PR descript
 Keep PR descriptions tight. A short paragraph of context, a brief bullet list of the actual \
 changes, and a single line of test confirmation is enough.
 """
-LINKABLE_AGENTS = (AgentName.claude, AgentName.codex)
+LINKABLE_AGENTS = (AgentName.claude, AgentName.codex, AgentName.pi)
 MISSING_CANONICAL = (
     "canonical instructions are missing; run `agentrecall instructions init --apply` first"
 )
@@ -50,6 +50,7 @@ MISSING_CANONICAL = (
 class InstructionTarget(StrEnum):
     claude = "claude"
     codex = "codex"
+    pi = "pi"
 
 
 def normalize_instructions(text: str) -> str:
@@ -74,16 +75,12 @@ def resolve_canonical_text(layout: Layout) -> tuple[str, str]:
     if existing is not None and existing.strip():
         return normalize_instructions(existing), "existing ~/.agents/AGENTS.md"
 
-    claude = layout.agent(AgentName.claude)
-    codex = layout.agent(AgentName.codex)
-    claude_text = _read_if_file(claude.instruction_file) if claude.instruction_file else None
-    codex_text = _read_if_file(codex.instruction_file) if codex.instruction_file else None
-
     sources: list[tuple[str, str]] = []
-    if claude_text is not None and claude_text.strip():
-        sources.append((normalize_instructions(claude_text), str(claude.instruction_file)))
-    if codex_text is not None and codex_text.strip():
-        sources.append((normalize_instructions(codex_text), str(codex.instruction_file)))
+    for name in LINKABLE_AGENTS:
+        path = layout.agent(name).instruction_file
+        text = _read_if_file(path) if path is not None else None
+        if text is not None and text.strip():
+            sources.append((normalize_instructions(text), str(path)))
 
     if not sources:
         return DEFAULT_INSTRUCTIONS, "built-in default"
@@ -123,6 +120,7 @@ def instruction_link_plan(
     mode: LinkMode,
     *,
     agents: tuple[AgentName, ...],
+    skip_missing_homes: bool = False,
 ) -> list[PlanItem]:
     src = layout.agents_instructions
     items: list[PlanItem] = []
@@ -132,6 +130,9 @@ def instruction_link_plan(
         if spec.instruction_file is None:
             continue
         dest = spec.instruction_file
+        if skip_missing_homes and _skip_missing_home(layout, name):
+            items.append(PlanItem(Op.skip, dest, src, _not_installed(name, spec.home)))
+            continue
         if (
             dest.is_file()
             and not dest.is_symlink()
@@ -164,11 +165,14 @@ def link_instructions(
     dry_run: bool,
     mode: LinkMode,
     agents: tuple[AgentName, ...],
+    skip_missing_homes: bool = False,
 ) -> tuple[list[str], int]:
+    """Link instruction adapters; `skip_missing_homes` avoids creating optional agent homes."""
     _canonical_path(layout)
     lines: list[str] = []
     conflicts = 0
-    for item in instruction_link_plan(layout, mode, agents=agents):
+    plan = instruction_link_plan(layout, mode, agents=agents, skip_missing_homes=skip_missing_homes)
+    for item in plan:
         lines.append(apply_item(item, dry_run=dry_run))
         if item.op is Op.conflict:
             conflicts += 1
@@ -187,6 +191,9 @@ def sync_instructions(layout: Layout, *, dry_run: bool, mode: LinkMode) -> tuple
             spec = layout.agent(name)
             if spec.instruction_file is None:
                 continue
+            if _skip_missing_home(layout, name):
+                lines.append(f"skip     {spec.instruction_file}  {_not_installed(name, spec.home)}")
+                continue
             lines.append(f"would link {spec.instruction_file} -> {layout.agents_instructions}")
         return lines, 0
 
@@ -195,5 +202,18 @@ def sync_instructions(layout: Layout, *, dry_run: bool, mode: LinkMode) -> tuple
         dry_run=dry_run,
         mode=mode,
         agents=LINKABLE_AGENTS,
+        skip_missing_homes=True,
     )
     return [*lines, *link_lines], conflicts
+
+
+def _skip_missing_home(layout: Layout, name: AgentName) -> bool:
+    spec = layout.agent(name)
+    return spec.link_instructions_only_when_installed and not layout.is_installed(spec)
+
+
+def _not_installed(name: AgentName, home: Path) -> str:
+    return (
+        f"agent not installed ({home} missing); to link anyway run "
+        f"`agentrecall instructions link --agent {name.value} --apply`"
+    )

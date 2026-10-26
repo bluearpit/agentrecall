@@ -11,7 +11,7 @@ The name includes “recall,” but transcript search is only one part of the pr
 | Thing | Shared? | How |
 | --- | --- | --- |
 | Skills (`SKILL.md`) | Yes | Canonical `~/.agents/skills/`. Directory symlink into `~/.claude/skills/`. |
-| Global instructions | Yes | Canonical `~/.agents/AGENTS.md`. File symlink (or hardlink) to `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. |
+| Global instructions | Yes | Canonical `~/.agents/AGENTS.md`. File symlink (or hardlink) to `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, and `~/.pi/agent/AGENTS.md` (Pi only when `~/.pi/agent` exists, unless `--agent pi`). |
 | Project instructions | Yes, with a shim | Repo `AGENTS.md` is the source. `agentrecall project` writes `CLAUDE.md` containing `@AGENTS.md` if that file is missing. |
 | Chats | Search only | Native JSONL stays put. SQLite FTS index at `~/.agents/history/index.sqlite`. |
 | Permissions | Partial | Canonical `permissions.yaml`. Shell/fetch rules for every agent, plus `external_write` extra roots for Claude, Codex, and OpenCode. Cursor CLI gets allowlisted commands only. |
@@ -95,7 +95,7 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
 
 `--link-mode auto|symlink|hardlink` applies to files. Skill folders always symlink.
 
-`instructions init` creates only the canonical file. `instructions link` activates file-based adapters for Claude Code and Codex, optionally for one `--agent`. `instructions show` prints the exact canonical text to paste into Cursor or OpenCode's UI; there are no target-specific transformations.
+`instructions init` creates only the canonical file. `instructions link` activates file-based adapters for Claude Code, Codex, and Pi, optionally for one `--agent`. Without `--agent`, Pi is skipped if its agent directory does not exist yet. When `~/.agents/AGENTS.md` does not exist, `instructions init` seeds it from the first non-empty file among `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, and `~/.pi/agent/AGENTS.md`, and warns if a later one differs. Linking replaces an adapter file that matches the canonical text after normalization. A file that differs is reported as a conflict, left untouched, and makes the command exit non-zero; merge it into `~/.agents/AGENTS.md`, remove it, and link again. `instructions show` prints the exact canonical text to paste into Cursor or OpenCode's UI; there are no target-specific transformations.
 
 ## Layout
 
@@ -114,6 +114,7 @@ The instruction model is one source of truth with generated or manually synchron
 ~/.agents/AGENTS.md        source of truth
 ├── ~/.claude/CLAUDE.md    symlink or hardlink adapter
 ├── ~/.codex/AGENTS.md     symlink or hardlink adapter
+├── ~/.pi/agent/AGENTS.md  symlink or hardlink adapter
 ├── Cursor User Rules      paste from `instructions show`
 └── OpenCode instructions  paste from `instructions show`
 ```
@@ -123,7 +124,7 @@ The instruction model is one source of truth with generated or manually synchron
 | Claude Code | `~/.claude/skills` (needs link) | `~/.claude/CLAUDE.md` | `~/.claude/projects/**/*.jsonl` |
 | Cursor | reads `~/.agents/skills` | User Rules in the UI | `~/.cursor/projects/**/agent-transcripts/**/*.jsonl` |
 | Codex | reads `~/.agents/skills` | `~/.codex/AGENTS.md` | `~/.codex/sessions/**/*.jsonl` |
-| Pi | — | — | `~/.pi/agent/sessions/**/*.jsonl` |
+| Pi | reads `~/.agents/skills` | `~/.pi/agent/AGENTS.md` | `~/.pi/agent/sessions/**/*.jsonl` |
 | OpenCode | reads `~/.agents/skills` | — | not indexed |
 
 `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `XDG_CONFIG_HOME`, `PI_CODING_AGENT_DIR`, and `PI_CODING_AGENT_SESSION_DIR` are honored. Pi session files follow [Pi's documented JSONL format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md). The session header supplies its ID, cwd, and start time; the latest `session_info` entry supplies an optional name. Unnamed sessions use the first user message as the title. Pi bash calls appear in `history commands --agent pi` and `history show`. Pi's native files stay in place.
