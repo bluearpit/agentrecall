@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -114,10 +115,15 @@ def files_identical(left: Path, right: Path) -> bool:
 def blocking_ancestor(dest: Path) -> Path | None:
     """Return the nearest existing ancestor of dest that is not a directory, if any."""
     for parent in dest.parents:
-        if parent.is_dir():
+        try:
+            st = parent.stat()
+        except OSError:
+            if parent.is_symlink():
+                return parent
+            continue
+        if stat.S_ISDIR(st.st_mode):
             return None
-        if parent.exists() or parent.is_symlink():
-            return parent
+        return parent
     return None
 
 

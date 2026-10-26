@@ -334,6 +334,8 @@ def apply_claude_settings(
     *,
     dry_run: bool,
 ) -> str:
+    if (conflict := _blocked(path)) is not None:
+        return conflict
     data = _read_json(path)
     bucket = _permissions_bucket(data)
     allow = [item for item in bucket.get("allow", []) if isinstance(item, str)]
@@ -404,6 +406,8 @@ def apply_opencode(
     *,
     dry_run: bool,
 ) -> str:
+    if (conflict := _blocked(path)) is not None:
+        return conflict
     data = _read_json(path)
     permission: dict[str, Any] = {}
     if isinstance(data.get("permission"), dict):
@@ -467,6 +471,8 @@ def apply_codex_writable_roots(
     *,
     dry_run: bool,
 ) -> str:
+    if (conflict := _blocked(path)) is not None:
+        return conflict
     roots = list(rules.codex_writable_roots)
     old_managed = managed.get("codex_writable_roots", [])
     existing_text = path.read_text(encoding="utf-8") if path.is_file() else ""
@@ -507,8 +513,6 @@ def apply_codex_writable_roots(
         new_text = stripped
 
     managed["codex_writable_roots"] = roots
-    if (conflict := _blocked(path)) is not None:
-        return conflict
     if dry_run:
         return f"would write {path}"
     if not roots and not path.is_file():

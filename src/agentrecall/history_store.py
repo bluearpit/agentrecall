@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import ParamSpec, TypeVar
 
 from agentrecall.history_models import CommandRecord, SessionRecord
+from agentrecall.linking import blocking_ancestor
 
 SCHEMA_VERSION = 6
 SQLITE_BUSY_TIMEOUT_MS = 5_000
@@ -24,6 +25,8 @@ _R = TypeVar("_R")
 
 
 def connect(db_path: Path) -> sqlite3.Connection:
+    if (blocker := blocking_ancestor(db_path)) is not None:
+        raise OSError(f"cannot open history database: parent {blocker} is not a directory")
     db_path.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(db_path, timeout=SQLITE_BUSY_TIMEOUT_MS / 1_000)
     connection.row_factory = sqlite3.Row

@@ -11,6 +11,7 @@ from agentrecall.linking import (
     Op,
     PlanItem,
     apply_item,
+    blocking_ancestor,
     is_linked_to,
     plan_file_link,
 )
@@ -94,6 +95,10 @@ def resolve_canonical_text(layout: Layout) -> tuple[str, str]:
 
 def write_canonical(layout: Layout, text: str, *, dry_run: bool) -> str:
     dest = layout.agents_instructions
+    if (blocker := blocking_ancestor(dest)) is not None:
+        return f"conflict {dest}  parent {blocker} is not a directory"
+    if dest.is_dir():
+        return f"conflict {dest}  destination is a directory"
     if dest.exists() and not dest.is_symlink() and files_identical_text(dest, text):
         return f"skip     {dest}  canonical already up to date"
     if dry_run:
@@ -185,6 +190,9 @@ def render_instructions(layout: Layout) -> str:
 
 def sync_instructions(layout: Layout, *, dry_run: bool, mode: LinkMode) -> tuple[list[str], int]:
     lines = init_instructions(layout, dry_run=dry_run)
+    conflicts_in_init = sum(1 for line in lines if line.startswith("conflict"))
+    if conflicts_in_init > 0:
+        return lines, conflicts_in_init
     if dry_run and not layout.agents_instructions.exists():
         # Linking needs the canonical file to exist; report intended links anyway.
         for name in LINKABLE_AGENTS:

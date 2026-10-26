@@ -170,3 +170,11 @@ def test_agent_home_file_is_conflict_not_crash(home: Path, layout: Layout) -> No
         f"conflict {home / '.codex' / 'AGENTS.md'}  parent {home / '.codex'} is not a directory"
     ]
     assert (home / ".codex").read_text(encoding="utf-8") == "not a dir\n"
+
+
+def test_write_canonical_conflict_when_agents_home_is_file(home: Path, layout: Layout) -> None:
+    (home / ".agents").write_text("not a dir\n", encoding="utf-8")
+
+    lines = init_instructions(layout, dry_run=False)
+
+    assert any(line.startswith("conflict") and "is not a directory" in line for line in lines)

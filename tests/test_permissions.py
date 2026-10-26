@@ -217,3 +217,16 @@ def test_permissions_init_reports_conflict_when_agents_home_is_file(home: Path) 
     assert result.exit_code == 1
     assert "is not a directory" in result.stdout
     assert (home / ".agents").read_text(encoding="utf-8") == "not a dir\n"
+
+
+def test_blocked_write_does_not_mutate_managed_roots(home: Path, layout: Layout) -> None:
+    layout.agents_home.mkdir(parents=True)
+    layout.permissions_file.write_text("external_write:\n  - /tmp/custom_root\n", encoding="utf-8")
+    (home / ".codex").write_text("not a dir\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["permissions", "--apply"])
+
+    assert result.exit_code == 1
+    managed_file = layout.permissions_managed_file
+    if managed_file.is_file():
+        assert "codex_writable_roots" not in managed_file.read_text(encoding="utf-8")

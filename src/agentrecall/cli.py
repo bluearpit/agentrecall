@@ -281,7 +281,10 @@ def instructions_init(
     dry_run = not apply
     if dry_run:
         typer.echo("dry-run (pass --apply to write)")
-    _echo_lines(init_instructions(_layout(), dry_run=dry_run))
+    lines = init_instructions(_layout(), dry_run=dry_run)
+    _echo_lines(lines)
+    if any(line.startswith("conflict") for line in lines):
+        raise typer.Exit(code=1)
 
 
 @instructions_app.command("link")
@@ -461,11 +464,15 @@ def history_reindex(
     ] = False,
 ) -> None:
     """Scan native JSONL transcripts into ~/.agents/history/index.sqlite."""
-    indexed, skipped = reindex(
-        _layout(),
-        cwd=_optional_cwd(cwd),
-        all_projects=all_projects,
-    )
+    try:
+        indexed, skipped = reindex(
+            _layout(),
+            cwd=_optional_cwd(cwd),
+            all_projects=all_projects,
+        )
+    except OSError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     typer.echo(f"indexed {indexed}  skipped {skipped}")
 
 
@@ -510,17 +517,21 @@ def history_search(
         typer.echo(f"Error: unknown sort {sort!r}", err=True)
         raise typer.Exit(code=1)
     _history_format(output_format)
-    hits = search(
-        _layout(),
-        query,
-        cwd=_optional_cwd(cwd),
-        agent=agent,
-        all_projects=all_projects,
-        limit=limit,
-        sort=sort,
-        branch=branch,
-        this_worktree=this_worktree,
-    )
+    try:
+        hits = search(
+            _layout(),
+            query,
+            cwd=_optional_cwd(cwd),
+            agent=agent,
+            all_projects=all_projects,
+            limit=limit,
+            sort=sort,
+            branch=branch,
+            this_worktree=this_worktree,
+        )
+    except OSError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if output_format == "json":
         typer.echo(
             json.dumps(
@@ -618,17 +629,21 @@ def history_list(
     """List recent sessions for a project (or every project with --all)."""
     since_at, until_at = _time_bounds(since, until)
     _history_format(output_format)
-    hits = list_sessions(
-        _layout(),
-        cwd=_optional_cwd(cwd),
-        agent=agent,
-        all_projects=all_projects,
-        limit=limit,
-        since=since_at,
-        until=until_at,
-        branch=branch,
-        this_worktree=this_worktree,
-    )
+    try:
+        hits = list_sessions(
+            _layout(),
+            cwd=_optional_cwd(cwd),
+            agent=agent,
+            all_projects=all_projects,
+            limit=limit,
+            since=since_at,
+            until=until_at,
+            branch=branch,
+            this_worktree=this_worktree,
+        )
+    except OSError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     if output_format == "json":
         typer.echo(
             json.dumps(
@@ -664,7 +679,7 @@ def history_worktrees(
     _history_format(output_format)
     try:
         summaries = list_worktrees(_layout(), cwd=_optional_cwd(cwd))
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if output_format == "json":
@@ -750,7 +765,7 @@ def history_commands(
             branch=branch,
             this_worktree=this_worktree,
         )
-    except ValueError as exc:
+    except (OSError, ValueError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     if not hits:
