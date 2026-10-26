@@ -73,6 +73,36 @@ def test_legacy_instructions_command_still_combines_actions(home: Path, layout: 
     assert (home / ".codex" / "AGENTS.md").is_symlink()
 
 
+def test_status_lists_pi_with_native_skills(home: Path, layout: Layout) -> None:
+    skill = layout.agents_skills / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# demo\n", encoding="utf-8")
+    (home / ".pi" / "agent").mkdir(parents=True)
+
+    status = runner.invoke(app, ["status"])
+
+    assert status.exit_code == 0
+    pi_line = next(line for line in status.stdout.splitlines() if line.strip().startswith("pi "))
+    assert "installed=yes" in pi_line
+    assert "skills=1 native" in pi_line
+    assert "instructions=missing" in pi_line
+
+
+def test_instructions_link_skips_pi_without_pi_home(home: Path, layout: Layout) -> None:
+    result = runner.invoke(app, ["instructions", "--apply"])
+
+    assert result.exit_code == 0
+    assert (home / ".codex" / "AGENTS.md").is_symlink()
+    assert not (home / ".pi").exists()
+    assert "agent not installed" in result.stdout
+    assert "agentrecall instructions link --agent pi --apply" in result.stdout
+
+    linked = runner.invoke(app, ["instructions", "link", "--apply"])
+    assert linked.exit_code == 0
+    assert not (home / ".pi").exists()
+    assert "agent not installed" in linked.stdout
+
+
 def test_instructions_link_agent_pi(home: Path, layout: Layout) -> None:
     runner.invoke(app, ["instructions", "init", "--apply"])
 
