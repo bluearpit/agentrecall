@@ -127,3 +127,31 @@ def test_sync_dry_run_without_canonical_skips_missing_pi(home: Path, layout: Lay
     (home / ".pi" / "agent").mkdir(parents=True)
     lines, _ = sync_instructions(layout, dry_run=True, mode=LinkMode.auto)
     assert f"would link {pi_file} -> {layout.agents_instructions}" in lines
+
+
+def test_existing_pi_instructions_seed_canonical_and_link(home: Path, layout: Layout) -> None:
+    pi_file = home / ".pi" / "agent" / "AGENTS.md"
+    pi_file.parent.mkdir(parents=True)
+    pi_file.write_text("# Pi rules\n\nUse pathlib.\n", encoding="utf-8")
+
+    lines, conflicts = sync_instructions(layout, dry_run=False, mode=LinkMode.auto)
+
+    assert conflicts == 0
+    assert f"canonical source: {pi_file}" in lines
+    assert layout.agents_instructions.read_text(encoding="utf-8") == "# Pi rules\n\nUse pathlib.\n"
+    assert is_linked_to(pi_file, layout.agents_instructions)
+
+
+def test_differing_pi_instructions_warn_when_seeding(home: Path, layout: Layout) -> None:
+    claude_file = home / ".claude" / "CLAUDE.md"
+    claude_file.parent.mkdir(parents=True)
+    claude_file.write_text("# Claude\n", encoding="utf-8")
+    pi_file = home / ".pi" / "agent" / "AGENTS.md"
+    pi_file.parent.mkdir(parents=True)
+    pi_file.write_text("# Pi\n", encoding="utf-8")
+
+    lines = init_instructions(layout, dry_run=True)
+
+    assert (
+        lines[0] == f"canonical source: {claude_file} (warning: {pi_file} differs after normalize)"
+    )

@@ -95,6 +95,7 @@ def test_instructions_link_skips_pi_without_pi_home(home: Path, layout: Layout) 
     assert (home / ".codex" / "AGENTS.md").is_symlink()
     assert not (home / ".pi").exists()
     assert "agent not installed" in result.stdout
+    assert "agentrecall instructions link --agent pi --apply" in result.stdout
 
     linked = runner.invoke(app, ["instructions", "link", "--apply"])
     assert linked.exit_code == 0

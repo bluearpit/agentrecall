@@ -28,6 +28,9 @@ class AgentSpec:
     instruction_kind: str | None
     transcripts_glob: str
     detect_path: Path
+    # Default instruction linking skips this agent until its home exists, so a
+    # default run never creates the home (and status never reports a fake install).
+    link_instructions_only_when_installed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,6 +166,7 @@ class Layout:
                 instruction_kind="AGENTS.md",
                 transcripts_glob="sessions/**/*.jsonl",
                 detect_path=home,
+                link_instructions_only_when_installed=True,
             )
         home = self.opencode_home
         return AgentSpec(

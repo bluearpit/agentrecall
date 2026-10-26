@@ -256,7 +256,7 @@ def instructions_root(
         typer.Option("--link-mode", help="auto (symlink then hardlink), symlink, or hardlink."),
     ] = LinkMode.auto,
 ) -> None:
-    """Create ~/.agents/AGENTS.md and link Claude/Codex instruction files to it."""
+    """Create ~/.agents/AGENTS.md and link Claude, Codex, and Pi instruction files to it."""
     ctx.obj = {"apply": apply, "link_mode": link_mode}
     if ctx.invoked_subcommand is not None:
         return

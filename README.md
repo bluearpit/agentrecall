@@ -95,7 +95,7 @@ agentrecall permissions --cwd . --apply # project .agents/permissions.yaml -> pr
 
 `--link-mode auto|symlink|hardlink` applies to files. Skill folders always symlink.
 
-`instructions init` creates only the canonical file. `instructions link` activates file-based adapters for Claude Code, Codex, and Pi, optionally for one `--agent`. Without `--agent`, Pi is skipped if its agent directory does not exist yet. `instructions show` prints the exact canonical text to paste into Cursor or OpenCode's UI; there are no target-specific transformations.
+`instructions init` creates only the canonical file. `instructions link` activates file-based adapters for Claude Code, Codex, and Pi, optionally for one `--agent`. Without `--agent`, Pi is skipped if its agent directory does not exist yet. When `~/.agents/AGENTS.md` does not exist, `instructions init` seeds it from the first non-empty file among `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, and `~/.pi/agent/AGENTS.md`, and warns if a later one differs. Linking replaces an adapter file that matches the canonical text after normalization. A file that differs is reported as a conflict, left untouched, and makes the command exit non-zero; merge it into `~/.agents/AGENTS.md`, remove it, and link again. `instructions show` prints the exact canonical text to paste into Cursor or OpenCode's UI; there are no target-specific transformations.
 
 ## Layout
 
