@@ -417,7 +417,10 @@ def permissions_init(
         typer.echo("dry-run (pass --apply to write)")
     if note is not None:
         typer.echo(note)
-    typer.echo(init_policy(path, dry_run=dry_run))
+    line = init_policy(path, dry_run=dry_run)
+    typer.echo(line)
+    if line.startswith("conflict"):
+        raise typer.Exit(code=1)
 
 
 def _optional_cwd(cwd: Path | None) -> Path | None:

@@ -193,3 +193,27 @@ def test_missing_project_policy_is_reported(home: Path, layout: Layout, tmp_path
     assert sum(line.startswith("policy:") for line in lines) == 1
     expected = project.resolve() / ".agents" / "permissions.yaml"
     assert f"no project policy at {expected}" in "\n".join(lines)
+
+
+def test_permissions_apply_reports_conflict_when_agent_home_is_file(
+    home: Path, layout: Layout
+) -> None:
+    runner.invoke(app, ["permissions", "init", "--apply"])
+    (home / ".codex").write_text("not a dir\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["permissions", "--apply"])
+
+    assert result.exit_code == 1
+    assert "parent" in result.stdout and "is not a directory" in result.stdout
+    assert (home / ".claude" / "settings.json").is_file()
+    assert (home / ".codex").read_text(encoding="utf-8") == "not a dir\n"
+
+
+def test_permissions_init_reports_conflict_when_agents_home_is_file(home: Path) -> None:
+    (home / ".agents").write_text("not a dir\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["permissions", "init", "--apply"])
+
+    assert result.exit_code == 1
+    assert "is not a directory" in result.stdout
+    assert (home / ".agents").read_text(encoding="utf-8") == "not a dir\n"
