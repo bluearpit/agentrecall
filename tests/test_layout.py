@@ -30,3 +30,17 @@ def test_env_overrides(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert layout.agent(AgentName.cursor).reads_agents_skills_natively is True
     assert layout.agent(AgentName.codex).reads_agents_skills_natively is True
     assert layout.agent(AgentName.opencode).reads_agents_skills_natively is True
+
+
+def test_pi_reads_agents_skills_and_uses_agent_dir_instructions(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    default = Layout.from_environ().agent(AgentName.pi)
+    assert default.reads_agents_skills_natively is True
+    assert default.instruction_file == home / ".pi" / "agent" / "AGENTS.md"
+
+    custom = home / "custom-pi"
+    monkeypatch.setenv("PI_CODING_AGENT_DIR", str(custom))
+    moved = Layout.from_environ().agent(AgentName.pi)
+    assert moved.instruction_file == custom / "AGENTS.md"
+    assert AgentName.pi in {spec.name for spec in Layout.from_environ().agents()}

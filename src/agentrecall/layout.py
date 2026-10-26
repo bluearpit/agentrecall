@@ -158,9 +158,9 @@ class Layout:
                 display_name="Pi",
                 home=home,
                 skills_dir=home / "skills",
-                reads_agents_skills_natively=False,
-                instruction_file=None,
-                instruction_kind=None,
+                reads_agents_skills_natively=True,
+                instruction_file=home / "AGENTS.md",
+                instruction_kind="AGENTS.md",
                 transcripts_glob="sessions/**/*.jsonl",
                 detect_path=home,
             )
@@ -184,6 +184,7 @@ class Layout:
                 AgentName.claude,
                 AgentName.cursor,
                 AgentName.codex,
+                AgentName.pi,
                 AgentName.opencode,
             )
         )

@@ -96,3 +96,34 @@ def test_render_instructions_for_cursor(layout: Layout) -> None:
     layout.agents_instructions.write_text(canonical_text, encoding="utf-8")
 
     assert render_instructions(layout) == canonical_text
+
+
+def test_link_pi_when_installed_and_keep_conflicting_file(home: Path, layout: Layout) -> None:
+    init_instructions(layout, dry_run=False)
+    pi_home = home / ".pi" / "agent"
+    pi_home.mkdir(parents=True)
+
+    _, conflicts = sync_instructions(layout, dry_run=False, mode=LinkMode.auto)
+    assert conflicts == 0
+    assert is_linked_to(pi_home / "AGENTS.md", layout.agents_instructions)
+
+    (pi_home / "AGENTS.md").unlink()
+    (pi_home / "AGENTS.md").write_text("# pi only\n", encoding="utf-8")
+    lines, conflicts = link_instructions(
+        layout, dry_run=False, mode=LinkMode.auto, agents=(AgentName.pi,)
+    )
+    assert conflicts == 1
+    assert (pi_home / "AGENTS.md").read_text(encoding="utf-8") == "# pi only\n"
+    assert lines[0].startswith("conflict")
+
+
+def test_sync_dry_run_without_canonical_skips_missing_pi(home: Path, layout: Layout) -> None:
+    lines, _ = sync_instructions(layout, dry_run=True, mode=LinkMode.auto)
+
+    pi_file = home / ".pi" / "agent" / "AGENTS.md"
+    assert any(line.startswith("skip") and str(pi_file) in line for line in lines)
+    assert not (home / ".pi").exists()
+
+    (home / ".pi" / "agent").mkdir(parents=True)
+    lines, _ = sync_instructions(layout, dry_run=True, mode=LinkMode.auto)
+    assert f"would link {pi_file} -> {layout.agents_instructions}" in lines

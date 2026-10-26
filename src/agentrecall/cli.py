@@ -289,7 +289,7 @@ def instructions_link(
     ctx: typer.Context,
     agent: Annotated[
         InstructionTarget | None,
-        typer.Option("--agent", help="Link only claude or codex."),
+        typer.Option("--agent", help="Link only claude, codex, or pi."),
     ] = None,
     apply: Annotated[
         bool,
@@ -300,7 +300,7 @@ def instructions_link(
         typer.Option("--link-mode", help="auto (symlink then hardlink), symlink, or hardlink."),
     ] = None,
 ) -> None:
-    """Link canonical instructions into Claude and/or Codex."""
+    """Link canonical instructions into Claude, Codex, and Pi."""
     apply = apply or bool(ctx.obj and ctx.obj.get("apply"))
     parent_mode = ctx.obj.get("link_mode") if ctx.obj else None
     mode = link_mode or parent_mode or LinkMode.auto
@@ -314,6 +314,7 @@ def instructions_link(
             dry_run=dry_run,
             mode=mode,
             agents=agents,
+            skip_missing_homes=agent is None,
         )
     except FileNotFoundError as exc:
         typer.echo(f"Error: {exc}", err=True)
